@@ -22,6 +22,7 @@
   let refreshAccepted = false;
   let refreshDisconnected = false;
   let refreshCompletionWaiter = null;
+  let linkListener;
 
   function setStatus(message, kind) {
     const node = $('bleStatus');
@@ -85,6 +86,7 @@
     }
     $('bleSupport').textContent = hint;
     $('bleSupport').hidden = !hint;
+    linkListener?.({ canConnect, connected, busy, transferPlane, panel, name: device?.name });
   }
 
   function u32le(bytes, offset) {
@@ -157,6 +159,19 @@
     if (!connected || !commandChar) throw new Error('BLE 已断开');
     if (!commandChar.writeValueWithResponse) throw new Error('请使用支持 BLE 写入确认的新版 Chrome 或 Edge');
     return commandChar.writeValueWithResponse(bytes);
+  }
+
+  async function requestCardRefresh() {
+    if (!connected || !commandChar?.writeValueWithoutResponse) throw new Error('刷新请求需要可用的 BLE 连接');
+    const waiter = makeWaiter((p) => p[0] === 0xc5 || p[0] === 0x8f, 2500, '卡片刷新回执');
+    try {
+      // 0x45 renders inside the tag's write callback, which can outlast the connection.
+      await commandChar.writeValueWithoutResponse(Uint8Array.of(0x45));
+    } catch (error) {
+      waiter.cancel(error);
+      throw error;
+    }
+    return waiter.promise.catch(() => null);
   }
 
   async function command(bytes, predicate, timeoutMs, label) {
@@ -335,7 +350,8 @@
       return;
     }
     const refreshMs = (refresh.packet[4] << 8) | refresh.packet[5];
-    setStatus('传图、Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。', 'good');
+    releaseConnection();
+    setStatus('传图、Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。蓝牙已断开。', 'good');
   }
 
   async function connect() {
@@ -392,9 +408,13 @@
     updateControls();
   }
 
-  async function disconnect() {
-    if (device && device.gatt && device.gatt.connected) device.gatt.disconnect();
-    else onDisconnected();
+  function releaseConnection() {
+    if (device?.gatt.connected) device.gatt.disconnect();
+    if (device) onDisconnected();
+  }
+
+  function disconnect() {
+    releaseConnection();
     setStatus('价签已断开。', '');
   }
 
@@ -408,7 +428,7 @@
     if (!status.active) setStatus('未完成的平面 ' + plane + ' 已中止，可以安全开始新传图。', 'good');
   }
 
-  async function runBusy(action) {
+  async function runBusy(action, onError = (message) => setStatus(message, 'bad')) {
     if (busy) return;
     busy = true;
     updateControls();
@@ -418,7 +438,7 @@
       // A rejected GATT operation can arrive before the disconnect event.
       if (device && !device.gatt.connected) onDisconnected();
       const message = String((error && error.message) || error || '未知错误');
-      setStatus(message, 'bad');
+      onError(message);
     } finally {
       busy = false;
       updateControls();
@@ -430,5 +450,14 @@
   $('bleSend').addEventListener('click', () => runBusy(sendImage));
   $('bleAbort').addEventListener('click', () => runBusy(abortTransfer));
   window.addEventListener('bwr:render', updateControls);
+  window.INK_BLE = {
+    connect: (onError) => runBusy(connect, onError),
+    disconnect: () => runBusy(disconnect),
+    subscribe(listener) {
+      linkListener = listener;
+      updateControls();
+    },
+    runBusy, command, writeWithResponse, queryMtu, requestCardRefresh, crc32,
+  };
   updateControls();
 })();

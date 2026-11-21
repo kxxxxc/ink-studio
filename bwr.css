@@ -61,6 +61,7 @@ code {
 }
 body.debug-mode .nav-shell { max-width: 1600px; }
 .brand { display: flex; align-items: center; gap: 11px; }
+.nav-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .brand strong { font-size: 16px; font-weight: 700; letter-spacing: -0.025em; }
 .brand-mark {
   width: 32px;
@@ -826,6 +827,58 @@ input[type="checkbox"] {
 .ble-status.bad { color: #a32432; }
 .ble-status.good { color: #086747; }
 .ble-status.warn { color: #875900; }
+
+.card-dialog {
+  width: min(560px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.card-dialog::backdrop { background: rgb(22 27 45 / 42%); }
+.card-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.card-header h2 { margin: 0; font-size: 18px; }
+.card-body { display: grid; gap: 16px; padding: 16px 18px 18px; }
+.card-fields { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.card-fields label { display: grid; gap: 4px; min-width: 0; font-size: 13px; color: var(--muted); }
+.card-fields :is(input, select, textarea) {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-3);
+  font-size: 16px;
+  color: var(--text);
+}
+.card-fields textarea { resize: vertical; }
+.card-row, .card-search { display: grid; gap: 8px; align-items: end; }
+.card-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.card-search { grid-template-columns: minmax(0, 1fr) auto; }
+.card-dialog .btn { min-height: 42px; }
+.card-dialog .hint { margin: 0; overflow-wrap: anywhere; }
+.card-dialog .hint:empty { display: none; }
+.card-dialog a { color: var(--accent-hover); }
+.card-coordinates summary { cursor: pointer; color: var(--accent-hover); }
+.card-coordinates > :is(.card-row, label) { margin-top: 8px; }
+.card-device { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+#cardLink.ble-connected { color: #096747; background: #e9f7ef; }
+
 #selftest { max-width: 960px; margin: 0 auto 32px; padding-inline: 16px; white-space: pre-wrap; }
 
 @media (max-width: 1120px) {
@@ -838,6 +891,7 @@ input[type="checkbox"] {
 }
 @media (max-width: 600px) {
   .nav-shell { min-height: 58px; padding-inline: 16px; }
+  .card-dialog { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
   .app { padding: 24px 14px 26px; }
   .app.is-debug { grid-template-areas: "workspace" "settings" "details"; grid-template-columns: minmax(0, 1fr); }
   .workspace-head { margin-bottom: 13px; }

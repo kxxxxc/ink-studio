@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5f5f9">
 <title>Ink Studio · 墨水屏传图</title>
-<link rel="stylesheet" href="bwr.css">
+<link rel="stylesheet" href="bwr.css?v=3">
 </head>
 <body>
 <header class="topbar">
@@ -14,7 +14,10 @@
       <span class="brand-mark" aria-hidden="true"><i class="k"></i><i class="w"></i><i class="r"></i></span>
       <strong>Ink Studio</strong>
     </div>
-    <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
+    <div class="nav-actions">
+      <button class="btn nav-debug" id="cardOpen" type="button" aria-haspopup="dialog" aria-controls="cardDialog">价签卡片</button>
+      <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
+    </div>
   </div>
 </header>
 <input id="fileInput" type="file" accept="image/*" hidden>
@@ -351,12 +354,89 @@
   </aside>
 </main>
 
+<dialog class="card-dialog" id="cardDialog" aria-labelledby="cardTitle">
+  <header class="card-header">
+    <h2 id="cardTitle">价签卡片</h2>
+    <button class="btn ghost" id="cardClose" type="button" autofocus>关闭</button>
+  </header>
+  <div class="card-body">
+    <fieldset class="card-fields" id="cardFields">
+      <label>版式
+        <select id="cardMode">
+          <option value="1">月历</option>
+          <option value="2">日历 + 天气</option>
+          <option value="3">五天天气</option>
+          <option value="4">倒计时</option>
+          <option value="5">每日一言</option>
+        </select>
+      </label>
+      <label id="cardCalendar">每周起始
+        <select id="cardWeek"><option value="0">周日</option><option value="1">周一</option></select>
+      </label>
+      <div class="card-fields" id="cardWeather" hidden>
+        <div class="card-search">
+          <label>城市 <input id="cardCitySearch" type="search" placeholder="例如 北京" enterkeyhint="search"></label>
+          <button class="btn ghost" id="cardSearch" type="button">查找</button>
+        </div>
+        <select id="cardLocations" aria-label="城市搜索结果" hidden></select>
+        <p class="hint" id="cardLocation"></p>
+        <details class="card-coordinates" id="cardCoords">
+          <summary>自定义坐标和屏上城市名</summary>
+          <div class="card-row">
+            <label>纬度 <input id="cardLat" type="number" step="any" min="-90" max="90" inputmode="decimal"></label>
+            <label>经度 <input id="cardLon" type="number" step="any" min="-180" max="180" inputmode="decimal"></label>
+          </div>
+          <label>屏上城市名 <input id="cardCity" type="text" placeholder="例如 北京"></label>
+        </details>
+        <div class="ble-actions">
+          <button class="btn ghost" id="cardFetchWeather" type="button">查看天气</button>
+        </div>
+        <p class="hint" id="cardWeatherStatus" role="status"></p>
+        <p class="hint">天气随推送更新，数据来自 <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>。</p>
+      </div>
+      <div class="card-fields" id="cardCountdown" hidden>
+        <div class="card-row">
+          <label>事件标题 <input id="cardCdTitle" type="text" placeholder="例如 元旦"></label>
+          <label>目标日期 <input id="cardCdDate" type="date" min="2000-01-01" max="2099-12-31"></label>
+        </div>
+        <label>正文（可留空） <input id="cardCdBody" type="text"></label>
+        <p class="hint" id="cardCdNote"></p>
+      </div>
+      <div class="card-fields" id="cardQuotes" hidden>
+        <label>每天一条，最多 7 条。每行填「正文 | 出处」。
+          <textarea id="cardQuoteRows" rows="6" placeholder="海内存知己，天涯若比邻。 | 王勃"></textarea>
+        </label>
+        <div class="ble-actions">
+          <button class="btn ghost" id="cardQuoteDemo" type="button">填入示例</button>
+          <button class="btn ghost" id="cardQuoteFetch" type="button">取 7 条一言</button>
+        </div>
+        <p class="hint" id="cardQuoteNote"></p>
+        <p class="hint" id="cardQuoteStatus" role="status"></p>
+      </div>
+      <p class="hint" id="cardTextHint" hidden>用 <code>#r文字#e</code> 标红。价签按本机同步的日期在零点更新。</p>
+    </fieldset>
+    <section class="card-device" aria-label="蓝牙直连">
+      <div class="ble-header"><span class="badge" id="cardLink">未连接</span></div>
+      <p class="hint" id="cardLinkHint"></p>
+      <div class="ble-actions">
+        <button class="btn ghost" id="cardConnect" type="button">连接价签</button>
+        <button class="btn ghost" id="cardDisconnect" type="button" hidden>断开</button>
+        <button class="btn ghost" id="cardRead" type="button" disabled>读价签状态</button>
+        <button class="btn ghost" id="cardQuoteNext" type="button" hidden disabled>看下一条</button>
+        <button class="btn primary" id="cardPush" type="button" disabled>推送卡片并刷新</button>
+      </div>
+      <p class="ble-status" id="cardStatus" role="status" hidden></p>
+    </section>
+  </div>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <pre id="selftest" hidden></pre>
 <noscript><div class="noscript">Ink Studio 需要 JavaScript。</div></noscript>
 <script src="core.js"></script>
 <script src="panels.js"></script>
 <script src="app.js"></script>
-<script src="ble-transfer.js?v=2"></script>
+<script src="ble-transfer.js?v=3"></script>
+<script src="cards.js?v=1"></script>
 </body>
 </html>
