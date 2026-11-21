@@ -51,7 +51,7 @@ TLSR8359 价签固件 **0.5.79** 支持无配对、无密钥的 BLE 图传。浏
 | `17` | `97 active loaded got:u32LE 01 width:u16LE height:u16LE mode:u8` | `active` 为接收中的平面，`loaded` 为已提交的平面，`00` 表示无。平面从 1 开始 |
 | `18 token` | `98 token mtu received_len` | 回显 token，报告协商后的 ATT MTU（23–255）和请求长度 2 |
 | `10 plane length:u32LE crc32:u32LE` | `90 rc erase_ms:u16BE` | 开始接收一个平面，长度和 CRC 针对整个平面 |
-| `11 payload…` | 每累计 4096 B 通知 `91 got:u32LE` | 单包数据上限 `min(243, MTU−4)`。网页在 4096 B 边界停等确认，最后一段完成后直接提交 |
+| `11 payload…` | 每累计 4096 B 通知 `91 got:u32LE` | 单包数据上限 `min(243, MTU−4)`。每包使用 GATT 带响应写入，等待 ATT 确认后再发下一包。`91` 是进度通知，丢失时仍可继续传输 |
 | `12` | `92 rc got:u32LE crc32:u32LE write_ms:u16BE erase_ms:u16BE` | 提交并从存储读回，返回实际数据长度和 CRC32 |
 | `13 plane` | `93 rc ms:u16BE` | 把已校验平面写入面板 RAM |
 | `14` | 先 `94 00`，完成时 `94 status busy_ms:u16BE total_ms:u16BE` | 全屏刷新，完成 `status=01`，失败使用大于 1 的状态；总耗时用非零毫秒数 |

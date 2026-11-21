@@ -8,7 +8,6 @@
   const CMD = '0000a001-0000-1000-8000-00805f9b34fb';
   const RSP = '0000a002-0000-1000-8000-00805f9b34fb';
   const WIRE_MODES = [null, 'bw', 'bwr', 'bwy', 'gray4', 'seven'];
-  const WINDOW_BYTES = 4096;
   const waiters = new Set();
   class NotificationTimeout extends Error {}
   let device = null;
@@ -18,8 +17,6 @@
   let busy = false;
   let transferPlane = 0;
   let panel = null;
-  let planeSize = 0;
-  let latestAck = 0;
   let token = 0;
   let refreshInProgress = false;
   let refreshAccepted = false;
@@ -143,10 +140,6 @@
   function receive(event) {
     const packet = packetBytes(event.target.value);
     if (!packet.length) return;
-    if (packet[0] === 0x91 && packet.length >= 5) {
-      latestAck = u32le(packet, 1);
-      if (transferPlane) setStatus('平面 ' + transferPlane + '：价签已接收 ' + latestAck.toLocaleString() + ' / ' + planeSize.toLocaleString() + ' B', '');
-    }
     for (const waiter of Array.from(waiters)) {
       try {
         if (waiter.predicate(packet)) waiter.finish(packet, null);
@@ -162,9 +155,8 @@
 
   async function writeWithResponse(bytes) {
     if (!connected || !commandChar) throw new Error('BLE 已断开');
-    if (commandChar.writeValueWithResponse) return commandChar.writeValueWithResponse(bytes);
-    if (commandChar.writeValue) return commandChar.writeValue(bytes);
-    throw new Error('当前浏览器不支持 GATT 写入');
+    if (!commandChar.writeValueWithResponse) throw new Error('请使用支持 BLE 写入确认的新版 Chrome 或 Edge');
+    return commandChar.writeValueWithResponse(bytes);
   }
 
   async function command(bytes, predicate, timeoutMs, label) {
@@ -227,56 +219,57 @@
     return mtu;
   }
 
-  function waitForAck(target, timeoutMs) {
-    if (latestAck >= target) return Promise.resolve(latestAck);
-    const waiter = makeWaiter((packet) => packet[0] === 0x91 && packet.length >= 5 && u32le(packet, 1) >= target, timeoutMs, '数据分块确认');
-    return waiter.promise.then((packet) => u32le(packet, 1));
-  }
-
   async function sendPlane(planeBytes, planeNumber, mtu, progressBase) {
-    planeSize = planeBytes.length;
+    const total = planeBytes.length;
     const wantedCrc = crc32(planeBytes);
     const begin = [0x10, planeNumber, 0, 0, 0, 0, 0, 0, 0, 0];
-    putU32le(begin, 2, planeBytes.length);
+    putU32le(begin, 2, total);
     putU32le(begin, 6, wantedCrc);
-    latestAck = 0;
-    transferPlane = planeNumber;
-    requireOk(await command(begin, (p) => p[0] === 0x90 && p.length >= 2, 20000, '平面擦除'), 0x90);
-
     const maxPayload = Math.min(243, mtu - 4);
-    if (maxPayload < 1) throw new Error('ATT MTU 太小，无法发送图像');
+    const planeLabel = '平面 ' + planeNumber;
     let sent = 0;
-    let acked = 0;
-    while (sent < planeBytes.length) {
-      if (!connected) throw new Error('传输过程中 BLE 断开');
-      const windowRoom = WINDOW_BYTES - (sent - acked);
-      const count = Math.min(maxPayload, windowRoom, planeBytes.length - sent);
-      const chunk = new Uint8Array(count + 1);
-      chunk[0] = 0x11;
-      chunk.set(planeBytes.subarray(sent, sent + count), 1);
-      if (!commandChar.writeValueWithoutResponse) throw new Error('当前浏览器不支持无响应 BLE 写入');
-      await commandChar.writeValueWithoutResponse(chunk);
-      sent += count;
-      setProgress(progressBase + sent);
-      if (sent - acked >= WINDOW_BYTES && sent < planeBytes.length) {
-        acked = await waitForAck(sent, 15000);
-        if (acked !== sent) throw new Error('设备确认的字节数与已发送字节数不符');
+    let stage = '擦除 Flash';
+    transferPlane = planeNumber;
+
+    try {
+      setStatus(planeLabel + '：正在擦除 Flash…', '');
+      requireOk(await command(begin, (p) => p[0] === 0x90 && p.length >= 2, 20000, '平面擦除'), 0x90);
+
+      stage = '写入图像数据';
+      setStatus(planeLabel + '：正在写入 ' + total.toLocaleString() + ' B 图像数据…', '');
+      // The tag programs Flash in the receive callback. Let ATT acknowledge each write
+      // before sending the next one. The 0x91 progress notification may be lost.
+      while (sent < total) {
+        const count = Math.min(maxPayload, total - sent);
+        const chunk = new Uint8Array(count + 1);
+        chunk[0] = 0x11;
+        chunk.set(planeBytes.subarray(sent, sent + count), 1);
+        await writeWithResponse(chunk);
+        sent += count;
+        setProgress(progressBase + sent);
       }
-    }
 
-    setStatus('平面 ' + planeNumber + ' 已发送 ' + sent.toLocaleString() + ' B，正在让价签读回 Flash 并校验 CRC32…', '');
-    const commit = await command([0x12], (p) => p[0] === 0x92 && p.length >= 10, 30000, 'Flash 回读校验');
-    requireOk(commit, 0x92);
-    const got = u32le(commit, 2);
-    const actualCrc = u32le(commit, 6);
-    if (got !== planeBytes.length || actualCrc !== wantedCrc) {
-      throw new Error('平面 ' + planeNumber + ' 回读不匹配：长度 ' + got + '，CRC32 0x' + actualCrc.toString(16).padStart(8, '0') + '（期望 0x' + wantedCrc.toString(16).padStart(8, '0') + '）');
-    }
+      stage = 'Flash 回读校验';
+      setStatus(planeLabel + '：正在读回 Flash 并校验 CRC32…', '');
+      const commit = await command([0x12], (p) => p[0] === 0x92 && p.length >= 10, 30000, stage);
+      requireOk(commit, 0x92);
+      const got = u32le(commit, 2);
+      const actualCrc = u32le(commit, 6);
+      if (got !== total || actualCrc !== wantedCrc) {
+        throw new Error('回读不匹配：长度 ' + got + '，CRC32 0x' + actualCrc.toString(16).padStart(8, '0') + '（期望 0x' + wantedCrc.toString(16).padStart(8, '0') + '）');
+      }
 
-    const pushed = await command([0x13, planeNumber], (p) => p[0] === 0x93 && p.length >= 4, 20000, '写入面板 RAM');
-    requireOk(pushed, 0x93);
-    transferPlane = 0;
-    updateControls();
+      stage = '写入面板 RAM';
+      setStatus(planeLabel + '：正在写入面板 RAM…', '');
+      const pushed = await command([0x13, planeNumber], (p) => p[0] === 0x93 && p.length >= 4, 20000, stage);
+      requireOk(pushed, 0x93);
+      transferPlane = 0;
+      updateControls();
+    } catch (error) {
+      const detail = device?.gatt.connected ? error.message : 'BLE 连接已断开，请重新连接';
+      const count = sent.toLocaleString() + ' / ' + total.toLocaleString() + ' B 已获写入确认';
+      throw new Error(planeLabel + ' · ' + stage + '（' + count + '）：' + detail, { cause: error });
+    }
   }
 
   async function refreshPanel() {
@@ -307,8 +300,16 @@
     }
   }
 
+  async function beforeTransfer(stage, request) {
+    try {
+      return await request();
+    } catch (error) {
+      throw new Error(stage + '（0 B 已获写入确认）：' + error.message, { cause: error });
+    }
+  }
+
   async function sendImage() {
-    const status = await queryStatus();
+    const status = await beforeTransfer('读取价签传图状态', queryStatus);
     if (status.active) return;
     lab.finishPendingRender();
     const { codes, w, h, colorMode } = lab.state;
@@ -319,11 +320,9 @@
 
     const packed = lab.B.pack(codes, w, h, { colorMode, encoding: 'driver' });
     const planes = packed.plane1 ? [packed.plane0, packed.plane1] : [packed.plane0];
-    const mtu = await queryMtu();
-    const mtuPayload = Math.min(243, mtu - 4);
+    const mtu = await beforeTransfer('查询 ATT MTU', queryMtu);
     $('bleProgress').max = packed.bytes;
     setProgress(0);
-    setStatus('开始传图：ATT MTU ' + mtu + '，每个 BLE 包最多 ' + mtuPayload + ' B 图像数据。', '');
     for (const [index, bytes] of planes.entries()) {
       await sendPlane(bytes, index + 1, mtu, index * packed.planeBytes);
     }
@@ -385,15 +384,18 @@
       if (refreshCompletionWaiter) refreshCompletionWaiter.finish({ disconnected: true }, null);
     }
     failWaiters(new Error('BLE 连接已断开'));
-    setStatus(transferInterrupted
-      ? '传输中断。请重新连接价签并检查传输状态。'
-      : '价签已断开。', transferInterrupted ? 'warn' : '');
+    if (!busy) {
+      setStatus(transferInterrupted
+        ? '传输中断。请重新连接价签并检查传输状态。'
+        : '价签已断开。', transferInterrupted ? 'warn' : '');
+    }
     updateControls();
   }
 
   async function disconnect() {
     if (device && device.gatt && device.gatt.connected) device.gatt.disconnect();
     else onDisconnected();
+    setStatus('价签已断开。', '');
   }
 
   async function abortTransfer() {
@@ -413,6 +415,8 @@
     try {
       await action();
     } catch (error) {
+      // A rejected GATT operation can arrive before the disconnect event.
+      if (device && !device.gatt.connected) onDisconnected();
       const message = String((error && error.message) || error || '未知错误');
       setStatus(message, 'bad');
     } finally {
