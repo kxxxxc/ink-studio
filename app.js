@@ -33,6 +33,7 @@
     dark: 64, light: 192, redScore: 42, redFirst: true, redSoft: 12, toneRed: 130,
   };
   const DEFAULT_TRANSFORM = { x: 0, y: 0, zoom: 100, angle: 0 };
+  const LAYER_KINDS = { image: '图片', ink: '手写', text: '文字' };
   const RGB_CHANNELS = ['R', 'G', 'B'];
   const MASK_INKS = ['#000', '#fff', '#f00'];
   const PALETTE_DEFAULTS = { K: '#000000', W: '#ffffff', R: '#c80000' };
@@ -72,7 +73,7 @@
   let toastTimer = 0, saveTimer = 0, fitTimer = 0;
   let rafProcess = 0, rafSource = 0;
   let lastHoverKey = '';
-  let imageRequest = 0, lastPreKey = '', inkCount = 0;
+  let imageRequest = 0, lastPreKey = '', inkCount = 0, textCount = 0;
   let fileTarget, stageDrag = null, editTimer = 0;
   const stageTouches = new Map();
   let touchTransform = null;
@@ -588,7 +589,7 @@
   function updateRecommendationUI() {
     const { autoConvert, recommendation, params, layers } = state;
     const title = !recommendation && autoConvert
-      ? '手写画布'
+      ? '图层合成'
       : autoConvert && !state.ditherManual
         ? '自动转换 · ' + IMAGE_KINDS[recommendation.kind]
         : '手动参数';
@@ -654,6 +655,24 @@
     };
     state.layers.push(layer);
     return layer;
+  }
+
+  function addTextLayer() {
+    const number = ++textCount;
+    const layer = {
+      kind: 'text', name: number === 1 ? '文字' : '文字 ' + number, visible: true,
+      width: state.w, height: state.h, text: '', ink: B.BLACK,
+      fontSize: Math.max(4, Math.round(Math.min(state.w, state.h) * 0.1)),
+      ...DEFAULT_TRANSFORM,
+    };
+    state.layers.push(layer);
+    selectLayer(layer);
+    renderLayerList();
+    setView('result');
+    if (state.split) setSplit(false);
+    if (state.autoFit) fitView(false);
+    rebuildSource();
+    $('textBody').focus();
   }
 
   function setDrawing(on, layer) {
@@ -738,7 +757,8 @@
     $('openBtn').textContent = image ? '替换图片' : '添加图片';
     if (!image) {
       $('srcName').textContent = state.activeLayer?.name || '尚未载入';
-      $('srcMeta').textContent = state.activeLayer ? '手写图层' : '拖入图片或点击预览区';
+      $('srcMeta').textContent = state.activeLayer
+        ? LAYER_KINDS[state.activeLayer.kind] + '图层' : '拖入图片或点击预览区';
       return;
     }
     const { width: iw, height: ih } = image;
@@ -772,19 +792,17 @@
     const c = Math.abs(cos), s = Math.abs(sin);
     const iw = layer.width, ih = layer.height;
     let base;
-    if (layer.kind === 'ink') base = Math.min(w / iw, h / ih);
+    if (layer.kind !== 'image') base = Math.min(w / iw, h / ih);
     else if (layer.fit === 'cover') base = Math.max((w * c + h * s) / iw, (w * s + h * c) / ih);
     else base = Math.min(w / (iw * c + ih * s), h / (iw * s + ih * c));
     return { x: w * (0.5 + layer.x), y: h * (0.5 + layer.y), radians, cos, sin,
       scale: base * layer.zoom / 100 };
   }
 
-  function drawStrokes(ctx, layer, mask) {
-    const inks = mask ? MASK_INKS : [state.paletteHex.K, state.paletteHex.W, state.paletteHex.R];
+  function drawStrokes(ctx, layer, inks) {
     ctx.lineCap = ctx.lineJoin = 'round';
     for (const stroke of layer.strokes) {
-      const code = stroke.ink === B.RED && state.colorMode === 'bw' ? B.BLACK : stroke.ink;
-      ctx.strokeStyle = ctx.fillStyle = inks[code];
+      ctx.strokeStyle = ctx.fillStyle = inks[stroke.ink];
       ctx.lineWidth = stroke.width;
       const start = stroke.points[0];
       ctx.beginPath();
@@ -802,7 +820,22 @@
     }
   }
 
+  function drawText(ctx, layer, color) {
+    const lines = layer.text.split('\n');
+    const lineHeight = layer.fontSize * 1.25;
+    ctx.font = `600 ${layer.fontSize}px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], 0, (i - (lines.length - 1) / 2) * lineHeight);
+    }
+  }
+
   function drawArtwork(ctx, mask = false) {
+    const { K, W, R } = state.paletteHex;
+    const inks = mask ? MASK_INKS.slice() : [K, W, R];
+    if (state.colorMode === 'bw') inks[B.RED] = inks[B.BLACK];
     let hasInk = false;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
@@ -815,8 +848,11 @@
       ctx.rotate(t.radians);
       ctx.scale(t.scale, t.scale);
       if (layer.kind === 'ink') {
-        drawStrokes(ctx, layer, mask);
+        drawStrokes(ctx, layer, inks);
         hasInk ||= layer.strokes.length > 0;
+      } else if (layer.kind === 'text') {
+        drawText(ctx, layer, inks[layer.ink]);
+        hasInk ||= layer.text.trim().length > 0;
       } else {
         if (mask) ctx.globalCompositeOperation = 'destination-out';
         ctx.drawImage(layer.source, -layer.width / 2, -layer.height / 2);
@@ -826,7 +862,7 @@
   }
 
   function rebuildInkMask(w, h) {
-    if (!state.layers.some((layer) => layer.visible && layer.strokes?.length)) return null;
+    if (!state.layers.some((layer) => layer.visible && (layer.strokes?.length || layer.text?.trim()))) return null;
     if (!maskCanvas) {
       maskCanvas = newCanvas(w, h);
       maskCtx = ctx2(maskCanvas);
@@ -918,7 +954,7 @@
       palette: state.palette, params: state.params, colorMode: state.colorMode,
       sourceRGBA: state.sourceData.data, accentChannel: state.colorMix?.channel,
     });
-    // 写实色笔画直出目标墨色。上方图片已按透明度从遮罩中扣除。
+    // 笔画和文字直出所选墨色。上方图片已按透明度从遮罩中扣除。
     if (state.inkMask) {
       for (let i = 0, o = 0; i < codes.length; i++, o += 4) {
         if (state.inkMask[o + 3] < 128) continue;
@@ -1408,8 +1444,21 @@
     $('drawMode').checked = state.drawing;
     $('drawTools').hidden = !state.drawing;
     $('undoStroke').disabled = !layer?.strokes?.length;
-    $('addLayerMenu').hidden = !layer;
-    $('layerPanel').hidden = state.layers.length < 2;
+    const text = layer?.kind === 'text' ? layer : null;
+    $('textTools').hidden = !text;
+    if (text) {
+      if ($('textBody').value !== text.text) $('textBody').value = text.text;
+      $('textSize').value = String(text.fontSize);
+      $('textColor').value = String(text.ink === B.RED && state.colorMode === 'bw' ? B.BLACK : text.ink);
+    }
+
+    const multiple = state.layers.length > 1;
+    $('layerPanel').hidden = !multiple;
+    const remove = $('removeLayer');
+    const actions = $(multiple ? 'layerActions' : 'editorActions');
+    if (remove.parentElement !== actions) actions.append(remove);
+    remove.textContent = multiple ? '删除' : '删除图层';
+    remove.hidden = !layer;
     $('layerUp').disabled = index < 0 || index === state.layers.length - 1;
     $('layerDown').disabled = index < 1;
     $('layerVisible').textContent = layer?.visible ? '隐藏' : '显示';
@@ -1439,7 +1488,7 @@
       button.setAttribute('aria-pressed', String(layer === state.activeLayer));
       name.textContent = layer.name;
       kind.className = 'layer-kind';
-      kind.textContent = !layer.visible ? '已隐藏' : layer.kind === 'image' ? '图片' : '笔画';
+      kind.textContent = layer.visible ? LAYER_KINDS[layer.kind] : '已隐藏';
       button.append(name, kind);
       item.append(button);
       entries.append(item);
@@ -1543,8 +1592,8 @@
     $('invBW').checked = !!state.invertBW;
     $('invRed').checked = !!state.invertRed;
 
-    syncLayerUI();
     syncColorUI();
+    syncLayerUI();
     syncModeUI();
     updateDitherUI();
     updateSourceUI();
@@ -1685,6 +1734,7 @@
     const point = artworkPoint(e, l);
     if (!preview && (!layer.visible || !insideArtwork(point))) return;
     e.preventDefault();
+    if (document.activeElement === $('textBody')) $('textBody').blur();
     const drag = {
       id: e.pointerId, layer, preview, x: e.clientX, y: e.clientY,
       fromX: preview ? state.panX : layer.x,
@@ -2179,6 +2229,31 @@
       $('addLayerMenu').open = false;
       setDrawing(true, addInkLayer());
     });
+    $('addTextLayer').addEventListener('click', () => {
+      $('addLayerMenu').open = false;
+      addTextLayer();
+    });
+    $('textBody').addEventListener('input', (e) => {
+      const layer = state.activeLayer;
+      if (layer?.kind !== 'text') return;
+      layer.text = e.target.value;
+      scheduleSource(true);
+    });
+    $('textSize').addEventListener('input', (e) => {
+      const layer = state.activeLayer;
+      if (layer?.kind !== 'text' || !e.target.validity.valid || !Number.isFinite(e.target.valueAsNumber)) return;
+      layer.fontSize = e.target.valueAsNumber;
+      scheduleSource(true);
+    });
+    $('textSize').addEventListener('change', (e) => {
+      if (state.activeLayer?.kind === 'text') e.target.value = String(state.activeLayer.fontSize);
+    });
+    $('textColor').addEventListener('change', (e) => {
+      const layer = state.activeLayer;
+      if (layer?.kind !== 'text') return;
+      layer.ink = Number(e.target.value);
+      scheduleSource();
+    });
     $('layerList').addEventListener('click', (e) => {
       const button = e.target.closest('button[data-layer]');
       if (button) selectLayer(state.layers[Number(button.dataset.layer)]);
@@ -2513,6 +2588,7 @@
     endStageInteraction();
     state.colorMode = mode;
     syncColorUI();
+    syncLayerUI();
     updateViewUI();
     rebuildSource();
     saveSoon();

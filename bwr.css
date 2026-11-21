@@ -112,7 +112,7 @@ select {
   cursor: pointer;
 }
 select:hover, input:hover { border-color: #b9bfce; }
-select:focus-visible, input:focus-visible, button:focus-visible {
+select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -634,6 +634,14 @@ input[type="checkbox"] {
   background: var(--panel-3);
 }
 .brush-width { grid-template-columns: auto minmax(66px, 95px) 38px; margin-right: auto; }
+.text-tools { display: grid; gap: 8px; }
+.text-tools textarea {
+  width: 100%; min-height: 62px; padding: 8px 9px; resize: vertical;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: 8px;
+  font-size: 16px; line-height: 1.4;
+}
+.text-tools input[type="number"] { width: 76px; font-size: 16px; }
 .stage-area .layer-panel { margin: 0; min-width: 0; }
 .layer-panel .block-head, .transform-tray .block-head { flex-wrap: wrap; }
 .layer-actions { gap: 4px; }
@@ -659,8 +667,7 @@ input[type="checkbox"] {
   align-items: end; gap: 10px;
 }
 .transform-fields .range-row { grid-template-columns: auto minmax(44px, 1fr) 42px; min-height: 28px; }
-.transform-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.remove-layer { margin-top: 10px; color: #9e2538; }
+.btn.remove-layer { color: #9e2538; }
 #transformName { min-width: 0; overflow-wrap: anywhere; }
 #colorMode { min-width: 0; }
 .image-details {

@@ -85,7 +85,7 @@
         <section class="editor-tray layer-panel" id="layerPanel" aria-labelledby="layerTitle" hidden>
           <div class="block-head">
             <h2 id="layerTitle">图层</h2>
-            <div class="layer-actions">
+            <div class="layer-actions" id="layerActions">
               <button class="btn sm" id="layerUp" type="button">上移</button>
               <button class="btn sm" id="layerDown" type="button">下移</button>
               <button class="btn sm" id="layerVisible" type="button">隐藏</button>
@@ -107,16 +107,18 @@
             <option value="bayer8">Bayer 8×8</option>
           </select>
         </label>
-        <div class="editor-actions">
+        <div class="editor-actions" id="editorActions">
           <button class="btn sm" id="transformBtn" type="button" aria-expanded="false" aria-controls="layerTransform" hidden>构图</button>
           <label class="check editor-check"><input id="drawMode" type="checkbox" aria-controls="drawTools"> 手写</label>
-          <details class="add-layer" id="addLayerMenu" hidden>
+          <details class="add-layer" id="addLayerMenu">
             <summary class="btn sm">＋ 图层</summary>
             <div class="add-menu">
               <button class="btn sm" id="addImageLayer" type="button">添加图片</button>
               <button class="btn sm" id="addInkLayer" type="button">新建手写</button>
+              <button class="btn sm" id="addTextLayer" type="button">添加文字</button>
             </div>
           </details>
+          <button class="btn sm remove-layer" id="removeLayer" type="button" aria-label="删除选中图层" hidden>删除图层</button>
         </div>
       </div>
       <div class="editor-tray drawing-tools" id="drawTools" hidden>
@@ -129,6 +131,23 @@
         </label>
         <label class="range-row brush-width">粗细 <input id="brushWidth" type="range" min="1" max="32" value="5"><output id="brushWidthOut">5 px</output></label>
         <button class="btn sm" id="undoStroke" type="button" disabled>撤销一笔</button>
+      </div>
+      <div class="editor-tray text-tools" id="textTools" hidden>
+        <label class="editor-field">文字
+          <textarea id="textBody" rows="2" placeholder="支持换行"></textarea>
+        </label>
+        <div class="editor-actions">
+          <label class="editor-field">字号（px）
+            <input id="textSize" type="number" min="4" max="512" step="1" inputmode="numeric">
+          </label>
+          <label class="editor-field">墨色
+            <select id="textColor">
+              <option value="0">黑</option>
+              <option value="1">白</option>
+              <option value="2" data-bwr>红</option>
+            </select>
+          </label>
+        </div>
       </div>
       <section class="editor-tray transform-tray" id="layerTransform" aria-label="图层构图" hidden>
         <div class="block-head">
@@ -152,10 +171,7 @@
             </span>
           </label>
         </div>
-        <div class="transform-footer">
-          <p id="editHint" class="hint"></p>
-          <button class="link remove-layer" id="removeLayer" type="button">移除图层</button>
-        </div>
+        <p id="editHint" class="hint"></p>
       </section>
 
       <div class="stage-status" id="debugStatus" hidden>
