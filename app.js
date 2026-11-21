@@ -33,6 +33,7 @@
     dark: 64, light: 192, redScore: 42, redFirst: true, redSoft: 12, toneRed: 130,
   };
   const DEFAULT_TRANSFORM = { x: 0, y: 0, zoom: 100, angle: 0 };
+  const RGB_CHANNELS = ['R', 'G', 'B'];
   const MASK_INKS = ['#000', '#fff', '#f00'];
   const PALETTE_DEFAULTS = { K: '#000000', W: '#ffffff', R: '#c80000' };
   const IMAGE_KINDS = {
@@ -48,7 +49,7 @@
     w: 800, h: 480,
     colorMode: 'bwr',
     layers: [], activeLayer: null, transformOpen: false, drawing: false,
-    sourceData: null, processed: null, inkMask: null,
+    sourceData: null, processed: null, inkMask: null, colorMix: null,
     ditherManual: false,
     autoConvert: true, recommendation: null, debugOpen: false,
     codes: null, pack: null, metrics: null,
@@ -73,6 +74,8 @@
   let lastHoverKey = '';
   let imageRequest = 0, lastPreKey = '', inkCount = 0;
   let fileTarget, stageDrag = null, editTimer = 0;
+  const stageTouches = new Map();
+  let touchTransform = null;
   let maskCanvas = null, maskCtx = null;
 
   /* ---------------------------------------------------------------- utils */
@@ -596,10 +599,21 @@
       $('quickDither').querySelector('option[value="' + algorithm + '"]').textContent;
     $('recommendationTitle').textContent = title;
     $('recommendationText').textContent = [fit, dither, layers.length > 1 ? layers.length + ' 个图层' : ''].filter(Boolean).join(' · ');
+    const colorMix = state.colorMix;
+    const colorSummary = $('colorSummary');
+    colorSummary.hidden = state.colorMode !== 'bwr' || !colorMix;
+    if (colorMix) {
+      const shares = colorMix.ratios.map((ratio, i) => RGB_CHANNELS[i] + ' ' + pct(ratio));
+      shares.push('中性 ' + pct(colorMix.neutral));
+      if (params.mode === 'dominant' && colorMix.channel !== null) {
+        shares.push(RGB_CHANNELS[colorMix.channel] + ' → 红墨');
+      }
+      colorSummary.textContent = shares.join(' · ');
+    }
   }
 
   function selectLayer(layer) {
-    endStageDrag();
+    endStageInteraction();
     state.activeLayer = layer;
     state.drawing = state.drawing && layer?.kind === 'ink' && layer.visible;
     syncLayerUI();
@@ -645,7 +659,7 @@
   function setDrawing(on, layer) {
     if (!on) {
       state.drawing = false;
-      endStageDrag();
+      endStageInteraction();
       syncLayerUI();
       drawStage();
       return;
@@ -832,6 +846,7 @@
     editTimer = 0;
     if (!state.layers.length) {
       state.sourceData = null; state.processed = null; state.codes = null; state.inkMask = null;
+      state.colorMix = null;
       state.resultCanvas = state.sourceCanvas = state.bwCanvas = state.redCanvas = null;
       state.metrics = null; state.pack = null;
       state.hover = null;
@@ -860,6 +875,8 @@
 
     const big = g.getImageData(0, 0, cw, ch);
     state.sourceData = ss === 1 ? big : downsample2x(big, w, h);
+    state.colorMix = state.layers.some(layer => layer.visible && layer.kind === 'image')
+      ? B.colorMix(state.sourceData.data, state.inkMask) : null;
     state.processed = null;
     reprocess();
   }
@@ -899,6 +916,7 @@
     const codes = B.quantize({
       w: w, h: h, rgb: state.processed.rgb,
       palette: state.palette, params: state.params, colorMode: state.colorMode,
+      sourceRGBA: state.sourceData.data, accentChannel: state.colorMix?.channel,
     });
     // 写实色笔画直出目标墨色。上方图片已按透明度从遮罩中扣除。
     if (state.inkMask) {
@@ -981,7 +999,8 @@
     const rect = stageRect();
     if (!rect.width || !rect.height) return;
     const pad = Math.min(64, Math.max(24, Math.min(rect.width, rect.height) * 0.09));
-    const z = Math.min((rect.width - pad) / state.w, (rect.height - pad) / state.h);
+    const inlinePad = matchMedia('(max-width: 600px)').matches ? 0 : pad;
+    const z = Math.min((rect.width - inlinePad) / state.w, (rect.height - pad) / state.h);
     state.zoom = clamp(z, 0.04, 32);
     state.panX = 0; state.panY = 0;
     updateZoomUI();
@@ -1310,7 +1329,7 @@
   }
 
   function isEditingArtwork() {
-    return Boolean(stageDrag?.changed || editTimer);
+    return Boolean(stageDrag?.changed || touchTransform?.changed || editTimer);
   }
 
   function scheduleSource(preview = false) {
@@ -1319,7 +1338,7 @@
     clearTimeout(editTimer);
     editTimer = preview ? setTimeout(() => {
       editTimer = 0;
-      if (!stageDrag?.changed) rebuildSource();
+      if (!isEditingArtwork()) rebuildSource();
     }, 135) : 0;
     if (!rafSource) {
       rafSource = requestAnimationFrame(() => {
@@ -1399,8 +1418,10 @@
     });
     $('view').classList.toggle('editable', !!layer?.visible);
     $('view').classList.toggle('drawing', state.drawing);
-    $('view').title = state.drawing ? '在画布内手写' : layer?.visible ? '拖动移动图层，滚轮缩放' : '';
-    $('editHint').textContent = state.drawing ? '关闭手写后可拖动和滚轮缩放' : '拖动移动图层 · 滚轮缩放';
+    const touch = matchMedia('(any-pointer: coarse)').matches;
+    const hint = touch ? '双指缩放 · 三指旋转' : '滚轮缩放';
+    $('view').title = !layer?.visible ? '' : state.drawing ? '在画布内手写' : '拖动移动图层 · ' + hint;
+    $('editHint').textContent = (state.drawing ? '单指手写 · ' : '拖动移动图层 · ') + hint;
     syncFramingUI();
   }
 
@@ -1444,7 +1465,7 @@
   function toggleLayerVisibility() {
     const layer = state.activeLayer;
     if (!layer) return;
-    endStageDrag();
+    endStageInteraction();
     layer.visible = !layer.visible;
     state.drawing = state.drawing && layer.visible;
     updateLayerStack();
@@ -1454,7 +1475,7 @@
     const layer = state.activeLayer;
     const index = state.layers.indexOf(layer);
     if (index < 0) return;
-    endStageDrag();
+    endStageInteraction();
     state.layers.splice(index, 1);
     layer.source?.close?.();
     selectLayer(state.layers[Math.max(0, index - 1)] || null);
@@ -1625,7 +1646,7 @@
 
   function wheelZoom(e) {
     const layer = state.activeLayer;
-    if (!layer || stageDrag || e.ctrlKey || e.metaKey) return;
+    if (!layer || stageDrag || stageTouches.size || e.ctrlKey || e.metaKey) return;
     const l = stageLayout();
     const point = artworkPoint(e, l);
     const preview = state.debugOpen && e.shiftKey;
@@ -1670,7 +1691,7 @@
       fromY: preview ? state.panY : layer.y,
     };
     stageDrag = drag;
-    $('view').setPointerCapture(e.pointerId);
+    if (e.pointerType !== 'touch') $('view').setPointerCapture(e.pointerId);
     if (preview) state.autoFit = false;
     if (!preview && state.drawing) {
       drag.geometry = layerGeometry(layer);
@@ -1727,8 +1748,135 @@
     stageDrag = null;
     const view = $('view');
     view.classList.remove('dragging');
-    if (view.hasPointerCapture(drag.id)) view.releasePointerCapture(drag.id);
+    if (!stageTouches.has(drag.id) && view.hasPointerCapture(drag.id)) {
+      view.releasePointerCapture(drag.id);
+    }
     if (drag.changed) scheduleSource();
+  }
+
+  function touchCenter(points) {
+    let clientX = 0, clientY = 0;
+    for (const point of points) {
+      clientX += point.clientX;
+      clientY += point.clientY;
+    }
+    return { clientX: clientX / points.length, clientY: clientY / points.length };
+  }
+
+  function rebaseTouchTransform() {
+    const changed = Boolean(touchTransform?.changed || stageDrag?.changed);
+    touchTransform = null;
+    if (stageTouches.size < 2 || stageTouches.size > 3) {
+      if (changed) scheduleSource();
+      return;
+    }
+
+    const layer = state.activeLayer;
+    if (!layer?.visible) return;
+    if (stageDrag?.stroke) {
+      // The second finger turns an in-progress touch stroke into a transform.
+      layer.strokes.pop();
+      $('undoStroke').disabled = !layer.strokes.length;
+    }
+    endStageDrag();
+
+    const points = Array.from(stageTouches.values());
+    const center = touchCenter(points);
+    const offsets = points.map(point => ({
+      x: point.clientX - center.clientX,
+      y: point.clientY - center.clientY,
+    }));
+    const spread = offsets.reduce((sum, point) => sum + point.x ** 2 + point.y ** 2, 0);
+    const geometry = layerGeometry(layer);
+    touchTransform = {
+      layer, offsets, spread, changed, scale: geometry.scale, angle: layer.angle,
+      anchor: localPoint(artworkPoint(center, stageLayout()), geometry),
+    };
+    if (changed) scheduleSource(true);
+  }
+
+  function startStagePointer(e) {
+    if (e.pointerType !== 'touch') {
+      if (!stageTouches.size) startStageDrag(e);
+      return;
+    }
+    if (!state.activeLayer?.visible || (stageDrag && !stageTouches.has(stageDrag.id))) return;
+    e.preventDefault();
+    $('view').setPointerCapture(e.pointerId);
+    stageTouches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    if (stageTouches.size === 1) startStageDrag(e);
+    else rebaseTouchTransform();
+  }
+
+  function moveStagePointer(e) {
+    if (e.pointerType !== 'touch') {
+      if (!stageTouches.size) moveStageDrag(e);
+      return;
+    }
+    const last = stageTouches.get(e.pointerId);
+    if (!last || (last.clientX === e.clientX && last.clientY === e.clientY)) return;
+    stageTouches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    const gesture = touchTransform;
+    if (!gesture) {
+      if (stageDrag) moveStageDrag(e);
+      return;
+    }
+    if (gesture.spread < 1) {
+      rebaseTouchTransform();
+      return;
+    }
+    const points = Array.from(stageTouches.values());
+    const center = touchCenter(points);
+    let dot = 0, cross = 0;
+    points.forEach((point, i) => {
+      const dx = point.clientX - center.clientX, dy = point.clientY - center.clientY;
+      const from = gesture.offsets[i];
+      dot += from.x * dx + from.y * dy;
+      cross += from.x * dy - from.y * dx;
+    });
+    const layer = gesture.layer;
+    const pinch = points.length === 2;
+    if (!pinch) {
+      const degrees = Math.round(Math.atan2(cross, dot) * 180 / Math.PI);
+      layer.angle = (gesture.angle + degrees + 540) % 360 - 180;
+    }
+    const factor = pinch ? Math.hypot(dot, cross) / gesture.spread : 1;
+    const zoom = layer.zoom * gesture.scale * factor / layerGeometry(layer).scale;
+    layer.zoom = clamp(zoom, +$('imgZoom').min, +$('imgZoom').max);
+
+    const point = artworkPoint(center, stageLayout());
+    const { scale, cos, sin } = layerGeometry(layer);
+    const anchor = gesture.anchor;
+    // Keep the same source point under the fingers, including after fit changes on rotation.
+    layer.x = (point.x - (anchor.x * cos - anchor.y * sin) * scale) / state.w - 0.5;
+    layer.y = (point.y - (anchor.x * sin + anchor.y * cos) * scale) / state.h - 0.5;
+    if (layer.kind === 'image') layer.autoFrame = false;
+    gesture.changed = true;
+    syncFramingUI();
+    scheduleSource(true);
+  }
+
+  function endStagePointer(e) {
+    if (e.pointerType !== 'touch') {
+      endStageDrag(e);
+      return;
+    }
+    if (!stageTouches.has(e.pointerId)) return;
+    if (touchTransform && e.type === 'pointerup') moveStagePointer(e);
+    endStageDrag(e);
+    stageTouches.delete(e.pointerId);
+    if (touchTransform || stageTouches.size >= 2) rebaseTouchTransform();
+  }
+
+  function endStageInteraction() {
+    endStageDrag();
+    const view = $('view');
+    const ids = Array.from(stageTouches.keys());
+    stageTouches.clear();
+    rebaseTouchTransform();
+    for (const id of ids) {
+      if (view.hasPointerCapture(id)) view.releasePointerCapture(id);
+    }
   }
 
   function inspectAt(e) {
@@ -2018,7 +2166,7 @@
     $('undoStroke').addEventListener('click', () => {
       const layer = state.activeLayer;
       if (!layer?.strokes?.length) return;
-      endStageDrag();
+      endStageInteraction();
       layer.strokes.pop();
       syncLayerUI();
       rebuildSource();
@@ -2123,13 +2271,13 @@
 
     // stage
     const view = $('view');
-    view.addEventListener('pointerdown', startStageDrag);
-    view.addEventListener('pointermove', moveStageDrag);
-    view.addEventListener('pointerup', endStageDrag);
-    view.addEventListener('pointercancel', endStageDrag);
-    view.addEventListener('lostpointercapture', endStageDrag);
+    view.addEventListener('pointerdown', startStagePointer);
+    view.addEventListener('pointermove', moveStagePointer);
+    view.addEventListener('pointerup', endStagePointer);
+    view.addEventListener('pointercancel', endStagePointer);
+    view.addEventListener('lostpointercapture', endStagePointer);
     view.addEventListener('pointerleave', () => {
-      if (state.debugOpen && !stageDrag) {
+      if (state.debugOpen && !stageDrag && !stageTouches.size) {
         lastHoverKey = ''; state.hover = null; updateInspector(); drawStage();
       }
     });
@@ -2255,7 +2403,7 @@
     });
     window.addEventListener('blur', () => {
       state.spaceSource = false;
-      endStageDrag();
+      endStageInteraction();
       drawStage();
     });
 
@@ -2362,7 +2510,7 @@
 
   function applyColorMode(mode) {
     if ((mode !== 'bw' && mode !== 'bwr') || state.colorMode === mode) return;
-    endStageDrag();
+    endStageInteraction();
     state.colorMode = mode;
     syncColorUI();
     updateViewUI();
@@ -2373,7 +2521,7 @@
   function applyPanelSize(w, h, id) {
     w = clamp(Math.round(w) || 400, 8, 1024);
     h = clamp(Math.round(h) || 300, 8, 1024);
-    endStageDrag();
+    endStageInteraction();
     const select = $('panelSelect');
     const size = w + 'x' + h;
     const knownSize = Array.from(select.options).some((option) => option.value === size);
@@ -2511,7 +2659,7 @@
       out.push('coverage=' + state.metrics.coverage.map((v) => (v * 100).toFixed(1) + '%').join('/'));
 
       let combos = 0;
-      for (const mode of mono ? ['nearest'] : ['nearest', 'rule', 'duotone']) {
+      for (const mode of mono ? ['nearest'] : ['dominant', 'nearest', 'rule', 'duotone']) {
         for (const dither of ['none', 'fs', 'atkinson', 'stucki', 'bayer4', 'bayer8']) {
           state.params.mode = mode;
           state.params.dither = dither;

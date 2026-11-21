@@ -232,6 +232,32 @@
     return { rgb: rgb, lum: lum };
   }
 
+  function colorMix(rgba, inkMask) {
+    const counts = [0, 0, 0];
+    let neutral = 0, pixels = 0;
+    for (let i = 0; i < rgba.length; i += 4) {
+      if (inkMask && inkMask[i + 3] >= 128) continue;
+      pixels++;
+      const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+      const max = Math.max(r, g, b);
+      if (max - Math.min(r, g, b) < 20) {
+        neutral++;
+        continue;
+      }
+      // 饱和的黄、青、品红把一票平分给并列的通道。
+      const weight = 1 / (Number(r === max) + Number(g === max) + Number(b === max));
+      if (r === max) counts[0] += weight;
+      if (g === max) counts[1] += weight;
+      if (b === max) counts[2] += weight;
+    }
+    const maxCount = Math.max(...counts);
+    return {
+      channel: maxCount > 0 ? counts.indexOf(maxCount) : null,
+      ratios: counts.map(count => count / (pixels || 1)),
+      neutral: neutral / (pixels || 1),
+    };
+  }
+
   /* 自动档只分析缩小后的原图，避免把适配画布产生的留白当成图片内容。 */
   function recommend(rgba, w, h, panelW, panelH, sourceAspect = w / h) {
     const lumHist = new Uint32Array(256);
@@ -301,7 +327,7 @@
           blackClip: document ? 14 : 10,
           whiteClip: document ? clamp(percentile(paperHist, paper, 0.1) - 3, 225, 246) : 244,
         },
-        params: { dither: 'none', warmGate: 46, redBias: 8 },
+        params: { mode: 'dominant', dither: 'none' },
       };
     }
 
@@ -322,9 +348,8 @@
         whiteClip: 250,
       },
       params: {
+        mode: 'dominant',
         dither: lightSmallPhoto ? 'atkinson' : 'fs',
-        warmGate: monochrome ? 90 : warmPhoto ? 70 : 48,
-        redBias: monochrome || warmPhoto ? -14 : -5,
       },
     };
   }
@@ -370,7 +395,7 @@
 
   function normalizeParams(input) {
     const p = Object.assign({
-      mode: 'nearest',        // nearest | rule | duotone
+      mode: 'nearest',        // nearest | rule | duotone | dominant
       space: 'oklab',         // nearest: oklab | rgb
       dither: 'fs',           // none | fs | atkinson | stucki | bayer4 | bayer8
       strength: 1,            // 0..1
@@ -558,7 +583,7 @@
     return codes;
   }
 
-  function rule(w, h, rgb, lab, lum, score, palette, p) {
+  function rule(w, h, lum, score, p) {
     const n = w * h;
     const codes = new Uint8Array(n);
     const mid = (p.dark + p.light) / 2;
@@ -692,9 +717,23 @@
     return codes;
   }
 
+  function dominant(w, h, rgb, source, channel, p) {
+    if (channel == null || !source) return monochrome(w, h, rgb, p);
+    const lum = new Float32Array(w * h);
+    const score = new Float32Array(w * h);
+    for (let i = 0, j = 0, k = 0; i < lum.length; i++, j += 3, k += 4) {
+      lum[i] = 0.299 * rgb[j] + 0.587 * rgb[j + 1] + 0.114 * rgb[j + 2];
+      const r = source[k], g = source[k + 1], b = source[k + 2];
+      const max = Math.max(r, g, b);
+      if (source[k + channel] === max) score[i] = max - Math.min(r, g, b);
+    }
+    // 低彩度保留灰阶。鲜艳的主色直接落红墨，过渡色按彩度产生红点。
+    return rule(w, h, lum, score, { ...p, redScore: 40, redSoft: 20, redFirst: true });
+  }
+
   /**
    * 主量化入口。
-   * @param {{w:number,h:number,rgb:Float32Array,palette:object,params:object,colorMode?:'bw'|'bwr'}} opts
+   * @param {{w:number,h:number,rgb:Float32Array,palette:object,params:object,colorMode?:'bw'|'bwr',sourceRGBA?:Uint8ClampedArray,accentChannel?:number|null}} opts
    * @returns {Uint8Array} 每像素 code：0 黑 / 1 白 / 2 红
    */
   function quantize(opts) {
@@ -704,6 +743,7 @@
     const palette = opts.palette || makePalette();
     const p = normalizeParams(opts.params);
     if (opts.colorMode === 'bw') return monochrome(w, h, rgb, p);
+    if (p.mode === 'dominant') return dominant(w, h, rgb, opts.sourceRGBA, opts.accentChannel, p);
     if (p.mode === 'duotone') {
       const lum = new Float32Array(n);
       for (let i = 0; i < n; i++) {
@@ -720,7 +760,7 @@
       lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
       score[i] = r - Math.max(g, b);
     }
-    if (p.mode === 'rule') return rule(w, h, rgb, lab, lum, score, palette, p);
+    if (p.mode === 'rule') return rule(w, h, lum, score, p);
     return nearest(w, h, rgb, lab, lum, score, palette, p);
   }
 
@@ -924,7 +964,7 @@
     BLACK, WHITE, RED, INK_NAMES,
     clamp, smoothstep, hexToRgb, rgbToHex,
     rgbToOklab, oklabToRgb, makePalette,
-    preprocess, boxBlur, recommend,
+    preprocess, boxBlur, recommend, colorMix,
     normalizeParams, quantize,
     analyze, pack, crc16,
     codesToRGBA, rgbToRGBA,

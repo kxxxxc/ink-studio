@@ -69,17 +69,30 @@
         </div>
       </div>
 
-      <div class="stage" id="stage">
-        <canvas id="view" aria-label="转换预览"></canvas>
-        <button class="empty" id="emptyOpen" type="button">
-          <span class="upload-icon" aria-hidden="true"><i></i></span>
-          <strong>选择图片</strong>
-          <span class="empty-hint">也可拖放或粘贴图片</span>
-        </button>
-        <div class="drop-overlay" id="dropOverlay" hidden><div>松手载入图片</div></div>
-        <div class="split-tag left" id="splitTagL" hidden>预处理后</div>
-        <div class="split-tag right" id="splitTagR" hidden>转换结果</div>
-        <div class="split-handle" id="splitHandle" hidden><i></i></div>
+      <div class="stage-area">
+        <div class="stage" id="stage">
+          <canvas id="view" aria-label="转换预览"></canvas>
+          <button class="empty" id="emptyOpen" type="button">
+            <span class="upload-icon" aria-hidden="true"><i></i></span>
+            <strong>选择图片</strong>
+            <span class="empty-hint">也可拖放或粘贴图片</span>
+          </button>
+          <div class="drop-overlay" id="dropOverlay" hidden><div>松手载入图片</div></div>
+          <div class="split-tag left" id="splitTagL" hidden>预处理后</div>
+          <div class="split-tag right" id="splitTagR" hidden>转换结果</div>
+          <div class="split-handle" id="splitHandle" hidden><i></i></div>
+        </div>
+        <section class="editor-tray layer-panel" id="layerPanel" aria-labelledby="layerTitle" hidden>
+          <div class="block-head">
+            <h2 id="layerTitle">图层</h2>
+            <div class="layer-actions">
+              <button class="btn sm" id="layerUp" type="button">上移</button>
+              <button class="btn sm" id="layerDown" type="button">下移</button>
+              <button class="btn sm" id="layerVisible" type="button">隐藏</button>
+            </div>
+          </div>
+          <ul class="layer-list" id="layerList"></ul>
+        </section>
       </div>
 
       <div class="editor-bar">
@@ -117,17 +130,6 @@
         <label class="range-row brush-width">粗细 <input id="brushWidth" type="range" min="1" max="32" value="5"><output id="brushWidthOut">5 px</output></label>
         <button class="btn sm" id="undoStroke" type="button" disabled>撤销一笔</button>
       </div>
-      <section class="editor-tray layer-panel" id="layerPanel" aria-labelledby="layerTitle" hidden>
-        <div class="block-head">
-          <h2 id="layerTitle">图层</h2>
-          <div class="layer-actions">
-            <button class="btn sm" id="layerUp" type="button">上移</button>
-            <button class="btn sm" id="layerDown" type="button">下移</button>
-            <button class="btn sm" id="layerVisible" type="button">隐藏</button>
-          </div>
-        </div>
-        <ul class="layer-list" id="layerList"></ul>
-      </section>
       <section class="editor-tray transform-tray" id="layerTransform" aria-label="图层构图" hidden>
         <div class="block-head">
           <h2 id="transformName">构图</h2>
@@ -151,7 +153,7 @@
           </label>
         </div>
         <div class="transform-footer">
-          <p id="editHint" class="hint">拖动移动图层 · 滚轮缩放</p>
+          <p id="editHint" class="hint"></p>
           <button class="link remove-layer" id="removeLayer" type="button">移除图层</button>
         </div>
       </section>
@@ -164,6 +166,7 @@
         <div class="image-summary" role="status">
           <strong id="recommendationTitle"></strong>
           <p id="recommendationText"></p>
+          <p id="colorSummary" hidden></p>
         </div>
         <div class="image-actions">
           <button class="btn ghost" id="openBtn" type="button">更换图片</button>
@@ -259,6 +262,11 @@
         <h2>判定方式</h2>
       </div>
       <div class="mode-grid" id="modeGrid">
+        <label class="mode-card">
+          <input type="radio" name="mode" value="dominant">
+          <strong>主色转红</strong>
+          <small>占比最高的 RGB 通道</small>
+        </label>
         <label class="mode-card">
           <input type="radio" name="mode" value="nearest" checked>
           <strong>最近色</strong>

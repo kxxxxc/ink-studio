@@ -202,7 +202,7 @@ input[type="checkbox"] {
 
 /* --------------------------------------------------------------- layout */
 .app {
-  max-width: 1008px;
+  max-width: 1240px;
   margin-inline: auto;
   padding: 34px 24px 42px;
   animation: studio-enter 440ms cubic-bezier(.2, .8, .25, 1) both;
@@ -366,7 +366,7 @@ input[type="checkbox"] {
 }
 
 /* --------------------------------------------------------------- mode */
-.mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
+.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
 .mode-card {
   position: relative;
   display: flex; flex-direction: column; gap: 3px;
@@ -467,9 +467,18 @@ input[type="checkbox"] {
   min-width: 38px; text-align: center;
   font-family: var(--mono); font-size: 9.5px; color: var(--muted);
 }
+.stage-area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+.stage-area:has(.layer-panel:not([hidden])) {
+  grid-template-columns: minmax(0, 1fr) clamp(148px, 22%, 208px);
+}
 .stage {
   position: relative;
-  height: clamp(260px, 49vh, 492px);
+  height: clamp(300px, 60vh, 620px);
   overflow: hidden;
   border-radius: 17px;
   background: #ecedf3;
@@ -625,7 +634,10 @@ input[type="checkbox"] {
   background: var(--panel-3);
 }
 .brush-width { grid-template-columns: auto minmax(66px, 95px) 38px; margin-right: auto; }
+.stage-area .layer-panel { margin: 0; min-width: 0; }
 .layer-panel .block-head, .transform-tray .block-head { flex-wrap: wrap; }
+.layer-actions { gap: 4px; }
+.layer-actions .btn { padding-inline: 6px; }
 .layer-list {
   list-style: none; margin: 0; padding: 0;
   display: grid; gap: 4px; max-height: 158px; overflow: auto;
@@ -811,8 +823,11 @@ input[type="checkbox"] {
   .workspace-head { margin-bottom: 13px; }
   .workspace-head h1 { font-size: 25px; }
   .panel-pick select { min-width: 135px; }
-  .preview-card { border-radius: 21px; padding: 8px; }
-  .stage, .is-debug .stage { height: clamp(218px, 71vw, 355px); border-radius: 14px; }
+  .preview-card { margin-inline: -14px; border-inline: 0; border-radius: 0; padding: 8px; }
+  .stage-area { margin-inline: -8px; }
+  .stage-area:has(.layer-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr); }
+  .stage-area .layer-panel { margin-inline: 8px; }
+  .stage, .is-debug .stage { height: clamp(236px, min(85vw, 62dvh), 450px); border-radius: 0; }
   .empty::after { inset: 9px; }
   .image-details { gap: 11px; padding: 12px 7px 6px; }
   .ble-block { gap: 12px; padding: 14px; }
