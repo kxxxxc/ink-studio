@@ -7,7 +7,6 @@
   const SERVICE = '0000a000-0000-1000-8000-00805f9b34fb';
   const CMD = '0000a001-0000-1000-8000-00805f9b34fb';
   const RSP = '0000a002-0000-1000-8000-00805f9b34fb';
-  const LEGACY_PANEL = { w: 800, h: 480, mode: 'bwr' };
   const WIRE_MODES = [null, 'bw', 'bwr', 'bwy', 'gray4', 'seven'];
   const WINDOW_BYTES = 4096;
   const waiters = new Set();
@@ -54,8 +53,8 @@
   }
 
   function readPanel(packet) {
-    if (packet.length === 7) return LEGACY_PANEL;
-    if (packet.length !== 13 || packet[7] !== 1) throw new Error('设备报告了不支持的传图协议版本');
+    if (packet.length !== 13) throw new Error('设备返回的传图状态帧长度有误，应为 13 字节');
+    if (packet[7] !== 1) throw new Error('设备报告了不支持的传图协议版本');
     const w = packet[8] | (packet[9] << 8);
     const h = packet[10] | (packet[11] << 8);
     const mode = WIRE_MODES[packet[12]];
