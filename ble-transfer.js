@@ -10,6 +10,7 @@
   const WIRE_MODES = [null, 'bw', 'bwr', 'bwy', 'gray4', 'seven'];
   const WINDOW_BYTES = 4096;
   const waiters = new Set();
+  class NotificationTimeout extends Error {}
   let device = null;
   let commandChar = null;
   let responseChar = null;
@@ -75,7 +76,7 @@
     $('bleAbort').hidden = !connected || !transferPlane;
     $('bleAbort').disabled = busy || !connected || !transferPlane;
 
-    let hint = '';
+    let hint = '传图无需蓝牙配对或输入密钥。';
     if (!window.isSecureContext) {
       hint = '蓝牙直连需要通过 HTTPS 或 localhost 打开。';
     } else if (!canConnect) {
@@ -134,7 +135,7 @@
     };
     // 写入完成前也可能收到断连或超时，先注册拒绝处理，再由调用方读取结果。
     void waiter.promise.catch(() => {});
-    waiter.timer = setTimeout(() => waiter.finish(null, new Error('等待' + label + '超时')), timeoutMs);
+    waiter.timer = setTimeout(() => waiter.finish(null, new NotificationTimeout('等待' + label + '超时')), timeoutMs);
     waiters.add(waiter);
     return waiter;
   }
@@ -189,7 +190,15 @@
   async function queryStatus() {
     panel = null;
     updateControls();
-    const packet = await command([0x17], (p) => p[0] === 0x97, 7000, '传图状态');
+    const requestStatus = (timeout) => command([0x17], (p) => p[0] === 0x97, timeout, '传图状态');
+    let packet;
+    try {
+      packet = await requestStatus(2000);
+    } catch (error) {
+      // 刚订阅通知时设备可能漏发第一帧。0x17 只读，可以安全重试一次。
+      if (!(error instanceof NotificationTimeout) || !connected) throw error;
+      packet = await requestStatus(5000);
+    }
     panel = readPanel(packet);
     const status = { active: packet[1], loaded: packet[2], got: u32le(packet, 3) };
     const planeCount = panel.mode === 'bwr' || panel.mode === 'bwy' ? 2 : 1;
