@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f5f5f9">
+<title>BWR Studio · 墨水屏传图</title>
+<link rel="stylesheet" href="bwr.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="nav-shell">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i class="k"></i><i class="w"></i><i class="r"></i></span>
+      <strong>BWR Studio</strong>
+    </div>
+    <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动调试</button>
+  </div>
+</header>
+<input id="fileInput" type="file" accept="image/*" hidden>
+
+<main class="app" id="app">
+  <section class="workspace" aria-labelledby="pageTitle">
+    <header class="workspace-head">
+      <h1 id="pageTitle">墨水屏传图</h1>
+      <div class="panel-controls">
+        <label class="panel-pick">
+          <select id="panelSelect" aria-label="目标画布">
+            <option value="800x480" selected>7.5″ · 800 × 480</option>
+            <option value="400x300">4.2″ · 400 × 300</option>
+            <option value="296x128">2.9″ · 296 × 128</option>
+            <option value="128x296">2.9″ 竖 · 128 × 296</option>
+            <option value="custom">自定义…</option>
+          </select>
+        </label>
+        <label class="panel-pick">
+          <select id="colorMode" aria-label="屏幕色彩模式">
+            <option value="bw">双色 · 黑白</option>
+            <option value="bwr" selected>三色 · 黑白红</option>
+          </select>
+        </label>
+        <span class="size-custom" id="sizeCustom" hidden>
+          <input id="customW" type="number" min="8" max="1024" step="1" value="800" aria-label="自定义宽度">
+          <span>×</span>
+          <input id="customH" type="number" min="8" max="1024" step="1" value="480" aria-label="自定义高度">
+        </span>
+      </div>
+    </header>
+
+    <div class="preview-card">
+      <div class="stage-toolbar" id="debugToolbar" hidden>
+        <div class="view-tabs" role="tablist" aria-label="预览内容">
+          <button class="view-tab active" data-view="result" role="tab" aria-selected="true">合成</button>
+          <button class="view-tab" data-view="source" role="tab" aria-selected="false">预处理后</button>
+          <button class="view-tab" data-view="bw" role="tab" aria-selected="false">BW 层</button>
+          <button class="view-tab" data-view="red" data-bwr role="tab" aria-selected="false">RED 层</button>
+        </div>
+        <div class="stage-tools">
+          <button class="btn sm" id="splitBtn" type="button" aria-pressed="false">原图 / 结果</button>
+          <button class="btn sm primary" id="smoothBtn" type="button" aria-pressed="true" title="按观看距离模拟；关掉可以看真实点阵">柔化</button>
+          <label class="check tiny"><input id="gridChk" type="checkbox"> 网格</label>
+          <span class="zoom-tools">
+            <button class="icon-btn" id="zoomOutBtn" type="button" title="缩小">−</button>
+            <output id="zoomOut">100%</output>
+            <button class="icon-btn" id="zoomInBtn" type="button" title="放大">+</button>
+            <button class="icon-btn wide" id="fitBtn" type="button" title="适应窗口">适应</button>
+            <button class="icon-btn wide" id="oneBtn" type="button" title="一个像素一个屏幕像素">1:1</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="stage" id="stage">
+        <canvas id="view" aria-label="转换预览"></canvas>
+        <button class="empty" id="emptyOpen" type="button">
+          <span class="upload-icon" aria-hidden="true"><i></i></span>
+          <strong>选择图片</strong>
+          <span class="empty-hint">也可拖放或粘贴图片</span>
+        </button>
+        <div class="drop-overlay" id="dropOverlay" hidden><div>松手载入图片</div></div>
+        <div class="split-tag left" id="splitTagL" hidden>预处理后</div>
+        <div class="split-tag right" id="splitTagR" hidden>转换结果</div>
+        <div class="split-handle" id="splitHandle" hidden><i></i></div>
+      </div>
+
+      <div class="editor-bar">
+        <label class="editor-field">抖动
+          <select id="quickDither">
+            <option value="auto">自动</option>
+            <option value="none">关闭</option>
+            <option value="fs">Floyd–Steinberg</option>
+            <option value="atkinson">Atkinson</option>
+            <option value="stucki">Stucki</option>
+            <option value="bayer4">Bayer 4×4</option>
+            <option value="bayer8">Bayer 8×8</option>
+          </select>
+        </label>
+        <div class="editor-actions">
+          <button class="btn sm" id="transformBtn" type="button" aria-expanded="false" aria-controls="layerTransform" hidden>构图</button>
+          <label class="check editor-check"><input id="drawMode" type="checkbox" aria-controls="drawTools"> 手写</label>
+          <details class="add-layer" id="addLayerMenu" hidden>
+            <summary class="btn sm">＋ 图层</summary>
+            <div class="add-menu">
+              <button class="btn sm" id="addImageLayer" type="button">添加图片</button>
+              <button class="btn sm" id="addInkLayer" type="button">新建手写</button>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="editor-tray drawing-tools" id="drawTools" hidden>
+        <label class="editor-field">笔色
+          <select id="brushColor">
+            <option value="0">黑</option>
+            <option value="1">白</option>
+            <option value="2" data-bwr>红</option>
+          </select>
+        </label>
+        <label class="range-row brush-width">粗细 <input id="brushWidth" type="range" min="1" max="32" value="5"><output id="brushWidthOut">5 px</output></label>
+        <button class="btn sm" id="undoStroke" type="button" disabled>撤销一笔</button>
+      </div>
+      <section class="editor-tray layer-panel" id="layerPanel" aria-labelledby="layerTitle" hidden>
+        <div class="block-head">
+          <h2 id="layerTitle">图层</h2>
+          <div class="layer-actions">
+            <button class="btn sm" id="layerUp" type="button">上移</button>
+            <button class="btn sm" id="layerDown" type="button">下移</button>
+            <button class="btn sm" id="layerVisible" type="button">隐藏</button>
+          </div>
+        </div>
+        <ul class="layer-list" id="layerList"></ul>
+      </section>
+      <section class="editor-tray transform-tray" id="layerTransform" aria-label="图层构图" hidden>
+        <div class="block-head">
+          <h2 id="transformName">构图</h2>
+          <button class="link" id="resetView" type="button">复位构图</button>
+        </div>
+        <div class="transform-fields">
+          <label class="field" id="fitField">适配
+            <select id="fitSelect">
+              <option value="cover">铺满（裁切）</option>
+              <option value="contain">完整放入</option>
+            </select>
+          </label>
+          <label class="range-row">缩放 <input id="imgZoom" type="range" min="10" max="400" step="1" value="100"><output id="imgZoomOut">100%</output></label>
+          <label class="field">旋转
+            <span class="angle-row">
+              <button class="mini" id="rotL" type="button" aria-label="逆时针 90°">↶</button>
+              <input id="angle" type="range" min="-180" max="180" step="1" value="0" aria-label="旋转角度">
+              <button class="mini" id="rotR" type="button" aria-label="顺时针 90°">↷</button>
+              <output id="angleOut">0°</output>
+            </span>
+          </label>
+        </div>
+        <div class="transform-footer">
+          <p id="editHint" class="hint">拖动移动图层 · 滚轮缩放</p>
+          <button class="link remove-layer" id="removeLayer" type="button">移除图层</button>
+        </div>
+      </section>
+
+      <div class="stage-status" id="debugStatus" hidden>
+        <span class="mono" id="statusLeft">—</span>
+        <span class="mono" id="statusRight">—</span>
+      </div>
+      <div class="image-details" id="imageDetails" hidden>
+        <div class="image-summary" role="status">
+          <strong id="recommendationTitle"></strong>
+          <p id="recommendationText"></p>
+        </div>
+        <div class="image-actions">
+          <button class="btn ghost" id="openBtn" type="button">更换图片</button>
+          <button class="btn" id="topExport" type="button">导出 PNG</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="ble-block" aria-labelledby="bleTitle">
+      <div class="ble-header">
+        <h2 id="bleTitle">发送到价签</h2>
+        <span class="badge" id="bleLinkBadge">未连接</span>
+      </div>
+      <div class="ble-actions">
+        <button class="btn ghost" id="bleConnect" type="button">连接价签</button>
+        <button class="btn ghost" id="bleDisconnect" type="button" hidden>断开</button>
+        <button class="btn primary" id="bleSend" type="button" disabled>发送并刷新</button>
+        <button class="btn ghost" id="bleAbort" type="button" hidden>中止未完成传输</button>
+      </div>
+      <p class="ble-support" id="bleSupport" hidden></p>
+      <progress id="bleProgress" max="96000" value="0" aria-label="蓝牙传输进度" hidden></progress>
+      <p class="ble-status" id="bleStatus" role="status" hidden></p>
+    </section>
+  </section>
+
+  <aside class="side left" id="debugSettings" aria-label="手动参数" hidden>
+    <div class="debug-head">
+      <h2>手动参数</h2>
+      <button class="btn sm" id="autoBtn" type="button">恢复自动</button>
+    </div>
+    <section class="block">
+      <div class="block-head">
+        <h2>画面</h2>
+      </div>
+      <div class="source-line">
+        <canvas id="srcThumb" width="112" height="75" aria-label="原图缩略图"></canvas>
+        <div class="source-meta">
+          <strong id="srcName">尚未载入</strong>
+          <small id="srcMeta">拖入图片或点击预览区</small>
+        </div>
+      </div>
+      <div class="samples" id="sampleRow">
+        <button class="chip" data-sample="chart" type="button">测试卡</button>
+        <button class="chip" data-sample="photo" type="button">风景</button>
+        <button class="chip" data-sample="portrait" type="button">人像</button>
+        <button class="chip" data-sample="logo" type="button">图标</button>
+      </div>
+      <button class="link paste-link" id="pasteBtn" type="button">从剪贴板粘贴</button>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>预处理</h2>
+        <button class="link" id="preReset" type="button">归零</button>
+      </div>
+      <label class="range-row">亮度 <input id="bri" type="range" min="-100" max="100" step="1" value="0"><output id="briOut">0</output></label>
+      <label class="range-row">对比度 <input id="con" type="range" min="-100" max="100" step="1" value="0"><output id="conOut">0</output></label>
+      <label class="range-row">伽马 <input id="gamma" type="range" min="40" max="250" step="1" value="100"><output id="gammaOut">1.00</output></label>
+      <label class="range-row">饱和度 <input id="sat" type="range" min="0" max="200" step="1" value="100"><output id="satOut">100%</output></label>
+      <label class="range-row" data-bwr>红色增强 <input id="redBoost" type="range" min="0" max="200" step="1" value="0"><output id="redBoostOut">0%</output></label>
+      <label class="range-row">锐化 <input id="sharp" type="range" min="0" max="150" step="1" value="30"><output id="sharpOut">30%</output></label>
+      <label class="range-row">暗部裁切 <input id="blackClip" type="range" min="0" max="80" step="1" value="10"><output id="blackClipOut">10</output></label>
+      <label class="range-row">白场裁切 <input id="whiteClip" type="range" min="200" max="255" step="1" value="236"><output id="whiteClipOut">236</output></label>
+      <label class="check"><input id="preInvert" type="checkbox"> 反色（负片）</label>
+      <p class="hint">饱和度 / 红色增强在 OKLab 里做：只动彩度，不改变明暗。锐化只作用于亮度，避免彩边。白场裁切把纸白附近直接归白，避免整张浅色背景被网点弄脏。</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>墨色</h2>
+        <button class="link" id="palReset" type="button">默认</button>
+      </div>
+      <div class="palette-row">
+        <input id="palK" type="color" value="#000000" aria-label="黑色">
+        <span class="pal-name">黑 K</span>
+        <input id="palKHex" class="hex" type="text" maxlength="7" value="#000000" spellcheck="false">
+      </div>
+      <div class="palette-row">
+        <input id="palW" type="color" value="#ffffff" aria-label="白色">
+        <span class="pal-name">白 W</span>
+        <input id="palWHex" class="hex" type="text" maxlength="7" value="#ffffff" spellcheck="false">
+      </div>
+      <div class="palette-row" data-bwr>
+        <input id="palR" type="color" value="#c80000" aria-label="红色">
+        <span class="pal-name">红 R</span>
+        <input id="palRHex" class="hex" type="text" maxlength="7" value="#c80000" spellcheck="false">
+      </div>
+      <p class="hint" data-bwr>红墨请按屏幕实测值填（例如 <code>#c80000</code>），不要直接用 sRGB 纯红。这个颜色同时用于距离判断和预览。</p>
+    </section>
+
+    <section class="block" data-bwr>
+      <div class="block-head">
+        <h2>判定方式</h2>
+      </div>
+      <div class="mode-grid" id="modeGrid">
+        <label class="mode-card">
+          <input type="radio" name="mode" value="nearest" checked>
+          <strong>最近色</strong>
+          <small>最近两色混合<br>图标 · 照片</small>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="mode" value="rule">
+          <strong>规则映射</strong>
+          <small>亮度 + 红度<br>优先保红</small>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="mode" value="duotone">
+          <strong>红当灰</strong>
+          <small>红作中间调<br>海报 · 人像</small>
+        </label>
+      </div>
+
+      <div id="nearestOpts">
+        <label class="field">距离空间
+          <select id="space">
+            <option value="oklab">OKLab（感知均匀，推荐）</option>
+            <option value="rgb">RGB 欧氏距离（经典方案）</option>
+          </select>
+        </label>
+        <label class="range-row">红墨倾向 <input id="redBias" type="range" min="-100" max="100" step="1" value="0"><output id="redBiasOut">0</output></label>
+        <label class="check"><input id="warmOnly" type="checkbox" checked> 红墨只用于明显暖色（避免肤色 / 纸白出红点）</label>
+        <label class="range-row" id="warmGateRow">红墨门槛 <input id="warmGate" type="range" min="0" max="120" step="1" value="60"><output id="warmGateOut">60</output></label>
+        <p class="hint">红度 = <code>r − max(g,b)</code>。肤色大多在 30–60，纯红 / 红围巾 / 红标通常 &gt;100；想要夕阳多些红可降到 30–45，人像 / 图标建议 55–80。</p>
+      </div>
+
+      <div id="ruleOpts" hidden>
+        <label class="range-row">暗阈值 <input id="dark" type="range" min="1" max="254" step="1" value="64"><output id="darkOut">64</output></label>
+        <label class="range-row">亮阈值 <input id="light" type="range" min="2" max="255" step="1" value="192"><output id="lightOut">192</output></label>
+        <label class="range-row">红度门槛 <input id="redScore" type="range" min="0" max="255" step="1" value="42"><output id="redScoreOut">42</output></label>
+        <label class="range-row">过渡柔化 <input id="redSoft" type="range" min="0" max="60" step="1" value="12"><output id="redSoftOut">12</output></label>
+        <label class="check"><input id="redFirst" type="checkbox" checked> 红优先：暗红也保留（不勾选则只在中间调出红）</label>
+        <div class="hist-wrap">
+          <canvas id="hist" height="76" aria-label="亮度 / 红度直方图"></canvas>
+          <div class="hist-legend"><span class="lg-k">亮度</span><span class="lg-r">红度 r-max(g,b)</span><span class="lg-tip">拖动竖线调阈值</span></div>
+        </div>
+        <div class="btn-row">
+          <button class="btn sm ghost" id="autoThresh" type="button">按直方图取阈值</button>
+          <button class="btn sm ghost" id="ruleReset" type="button">恢复默认</button>
+        </div>
+        <p class="hint"><code>gray = 0.299r + 0.587g + 0.114b</code>，<code>red = r − max(g,b)</code>。开着抖动时，阈值会变成「红墨密度 / 黑墨密度」两团连续值，各自做一维误差扩散——红和黑白不抢误差。</p>
+      </div>
+
+      <div id="duotoneOpts" hidden>
+        <label class="range-row">红墨亮度 <input id="toneRed" type="range" min="16" max="220" step="1" value="130"><output id="toneRedOut">130</output></label>
+        <p class="hint">把红墨当成一个中间灰阶：暗部→黑，中间调→红点，亮部→白。只有明暗参与，不再看源图是不是红的，适合人像和旧海报。</p>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>抖动</h2>
+        <span class="badge" id="ditherBadge">误差扩散</span>
+      </div>
+      <label class="field">算法
+        <select id="dither">
+          <option value="fs">Floyd–Steinberg（推荐）</option>
+          <option value="atkinson">Atkinson（高对比、少脏点）</option>
+          <option value="stucki">Stucki（更细，稍慢）</option>
+          <option value="bayer4">Bayer 4×4（有序网点）</option>
+          <option value="bayer8">Bayer 8×8（细网点）</option>
+          <option value="none">关闭（硬阈值）</option>
+        </select>
+      </label>
+      <label class="range-row" id="strengthRow">强度 <input id="strength" type="range" min="0" max="100" step="1" value="100"><output id="strengthOut">100%</output></label>
+      <label class="check" id="serpRow"><input id="serpentine" type="checkbox" checked> 蛇形扫描（减轻斜向纹理）</label>
+      <p class="hint" id="ditherHint">Floyd–Steinberg 将灰阶过渡分散为网点，适合照片。</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>预设</h2>
+        <button class="link" id="resetAll" type="button">全部复位</button>
+      </div>
+      <div class="preset-grid">
+        <button class="preset" data-preset="photo" type="button"><b>照片</b><small>FS 抖动</small></button>
+        <button class="preset" data-preset="icon" type="button"><b>图标</b><small>硬阈值</small></button>
+        <button class="preset" data-preset="redtone" data-bwr type="button"><b>红调</b><small>红当灰</small></button>
+        <button class="preset" data-preset="poster" type="button"><b>海报</b><small>Bayer 网点</small></button>
+        <button class="preset" data-preset="text" type="button"><b>文字</b><small>高对比</small></button>
+        <button class="preset" data-preset="custom" type="button"><b>微距</b><small>Atkinson</small></button>
+      </div>
+    </section>
+  </aside>
+
+
+  <aside class="side right" id="debugDetails" aria-label="分析与导出" hidden>
+    <section class="block">
+      <div class="block-head">
+        <h2>统计</h2>
+        <span class="badge" id="renderTime">—</span>
+      </div>
+      <div class="coverage">
+        <div class="cov-bar" id="covBar"><i class="k"></i><i class="w"></i><i class="r"></i></div>
+        <div class="cov-labels">
+          <span><b id="covK">0%</b> 黑</span>
+          <span><b id="covW">0%</b> 白</span>
+          <span data-bwr><b id="covR">0%</b> 红</span>
+        </div>
+      </div>
+      <div class="metrics">
+        <div><span>视觉误差 ΔE</span><b id="mDE">—</b><small>5×5 模糊后 OKLab</small></div>
+        <div><span>相邻异色率</span><b id="mTrans">—</b><small>衡量网点密度</small></div>
+        <div data-bwr><span>红连通块</span><b id="mRedComp">—</b><small id="mRedCompSub">最大 —</small></div>
+        <div data-bwr><span>孤立红点</span><b id="mIsolated">—</b><small>红点周围 ≤1 个红邻居</small></div>
+        <div data-bwr><span>源图强红</span><b id="mSrcRed">—</b><small>r−max(g,b) ≥ 60</small></div>
+        <div><span>点阵</span><b id="mPixels">—</b><small id="mBytes">—</small></div>
+      </div>
+      <p class="hint" id="metricHint">先把“视觉误差”压低，再看红连通块：照片的网点会天然产生很多小红块，图标则应是一整块。</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>输出平面</h2>
+        <span class="badge" id="planeBadge">BW + RED</span>
+      </div>
+      <div class="thumbs">
+        <button class="thumb active" data-view="result" type="button">
+          <canvas id="thumbResult" width="120" height="90"></canvas><span>合成</span>
+        </button>
+        <button class="thumb" data-view="bw" type="button">
+          <canvas id="thumbBW" width="120" height="90"></canvas><span>BW 层</span>
+        </button>
+        <button class="thumb" data-view="red" data-bwr type="button">
+          <canvas id="thumbRED" width="120" height="90"></canvas><span>RED 层</span>
+        </button>
+      </div>
+      <div class="rows">
+        <div class="row"><span>BW 平面</span><b class="mono" id="bwInfo">—</b></div>
+        <div class="row" data-bwr><span>RED 平面</span><b class="mono" id="redInfo">—</b></div>
+        <div class="row"><span>整幅</span><b class="mono" id="allInfo">—</b></div>
+      </div>
+      <p class="hint" data-bwr>预览里的 BW 层按“红点也置白”画；导出 BIN 默认用网关格式（红点 BW=0、RED=1），可在导出区切换。</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>像素检查</h2>
+        <span class="badge" id="pxCoord">—</span>
+      </div>
+      <div class="inspect">
+        <div class="swatches">
+          <span class="swatch" id="pxRawSwatch"></span>
+          <span class="swatch" id="pxProcSwatch"></span>
+        </div>
+        <div class="inspect-grid">
+          <span>原始</span><b class="mono" id="pxRaw">—</b>
+          <span>预处理</span><b class="mono" id="pxProc">—</b>
+          <span>亮度</span><b class="mono" id="pxLum">—</b>
+          <span data-bwr>红度</span><b class="mono" id="pxScore" data-bwr>—</b>
+          <span>选中</span><b id="pxInk">—</b>
+        </div>
+      </div>
+      <p class="hint" id="inspectHint">鼠标移到画布上看单个像素；放大到 8× 以上会画出像素网格。</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>导出</h2>
+        <span class="badge" id="sizeBadge">—</span>
+      </div>
+      <label class="field" data-bwr>位图编码
+        <select id="encoding">
+          <option value="gateway">网关双平面：BW 1=白 · RED 1=红</option>
+          <option value="driver">驱动双平面：红点 BW 也置白</option>
+        </select>
+      </label>
+      <div class="two checks">
+        <label class="check"><input id="invBW" type="checkbox"> BW 取反</label>
+        <label class="check" data-bwr><input id="invRed" type="checkbox"> RED 取反</label>
+      </div>
+      <div class="export-grid">
+        <button class="btn" id="expPng" type="button">合成 PNG</button>
+        <button class="btn" id="expBW" type="button">BW PNG</button>
+        <button class="btn" id="expRED" data-bwr type="button">RED PNG</button>
+        <button class="btn" id="expBin" type="button">双平面 BIN</button>
+        <button class="btn ghost" id="expBWBin" data-bwr type="button">BW BIN</button>
+        <button class="btn ghost" id="expRedBin" data-bwr type="button">RED BIN</button>
+      </div>
+      <div class="crc-box">
+        <div><span>CRC0 (BW)</span><b class="mono" id="crc0">—</b></div>
+        <div data-bwr><span>CRC1 (RED)</span><b class="mono" id="crc1">—</b></div>
+        <div><span>CRC (整幅)</span><b class="mono" id="crcAll">—</b></div>
+        <div><span>字节数</span><b class="mono" id="byteCount">—</b></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm ghost" id="expJson" type="button">参数 JSON</button>
+        <button class="btn sm ghost" id="copyJson" type="button">复制参数</button>
+      </div>
+      <p class="hint">CRC16-CCITT-FALSE，与固件 <code>/epd/info.last</code> 同一算法。</p>
+    </section>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<pre id="selftest" hidden></pre>
+<noscript><div class="noscript">这个调试台需要 JavaScript。</div></noscript>
+<script src="core.js"></script>
+<script src="app.js"></script>
+<script src="ble-transfer.js"></script>
+</body>
+</html>
