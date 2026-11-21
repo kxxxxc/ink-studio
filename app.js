@@ -1,4 +1,4 @@
-/* BWR Studio — 三色墨水屏传图与调试界面 */
+/* Ink Studio — 墨水屏图层编辑与传图 */
 (function () {
   'use strict';
 
@@ -35,8 +35,11 @@
   const DEFAULT_TRANSFORM = { x: 0, y: 0, zoom: 100, angle: 0 };
   const LAYER_KINDS = { image: '图片', ink: '手写', text: '文字' };
   const RGB_CHANNELS = ['R', 'G', 'B'];
-  const MASK_INKS = ['#000', '#fff', '#f00'];
-  const PALETTE_DEFAULTS = { K: '#000000', W: '#ffffff', R: '#c80000' };
+  const PANELS = window.INK_PANELS;
+  const panelById = new Map(PANELS.panels.map(panel => [panel.id, panel]));
+  const EMPTY_PRE = { ...PRE_DEFAULTS };
+  const EMPTY_PARAMS = { ...PARAM_DEFAULTS, dither: 'none', threshold: 128 };
+  const hasAccent = () => state.colorMode === 'bwr' || state.colorMode === 'bwy';
   const IMAGE_KINDS = {
     document: '文档 / 截图',
     graphic: '图标 / 插画',
@@ -49,10 +52,13 @@
     panelId: '800x480',
     w: 800, h: 480,
     colorMode: 'bwr',
-    layers: [], activeLayer: null, transformOpen: false, drawing: false,
-    sourceData: null, processed: null, inkMask: null, colorMix: null,
-    ditherManual: false,
-    autoConvert: true, recommendation: null, debugOpen: false,
+    layers: [], activeLayer: null, drawing: false, erasing: false,
+    sourceData: null, processed: null,
+    get pre() { return this.activeLayer?.pre || EMPTY_PRE; },
+    set pre(value) { if (this.activeLayer) this.activeLayer.pre = value; },
+    get params() { return this.activeLayer?.params || EMPTY_PARAMS; },
+    set params(value) { if (this.activeLayer) this.activeLayer.params = value; },
+    debugOpen: false,
     codes: null, pack: null, metrics: null,
     resultCanvas: null, sourceCanvas: null, bwCanvas: null, redCanvas: null,
     view: 'result', split: false, splitFrac: 0.5,
@@ -60,10 +66,7 @@
     zoom: 1, panX: 0, panY: 0,
     hover: null, spaceSource: false,
     renderMs: 0,
-    pre: Object.assign({}, PRE_DEFAULTS),
-    params: Object.assign({}, PARAM_DEFAULTS),
-    paletteHex: Object.assign({}, PALETTE_DEFAULTS),
-    palette: B.makePalette([PALETTE_DEFAULTS.K, PALETTE_DEFAULTS.W, PALETTE_DEFAULTS.R]),
+    palette: B.makePalette(PANELS.modes.bwr.colors),
     encoding: 'gateway',
     invertBW: false, invertRed: false,
   };
@@ -73,11 +76,11 @@
   let toastTimer = 0, saveTimer = 0, fitTimer = 0;
   let rafProcess = 0, rafSource = 0;
   let lastHoverKey = '';
-  let imageRequest = 0, lastPreKey = '', inkCount = 0, textCount = 0;
+  let imageRequest = 0, inkCount = 0, textCount = 0;
   let fileTarget, stageDrag = null, editTimer = 0;
   const stageTouches = new Map();
   let touchTransform = null;
-  let maskCanvas = null, maskCtx = null;
+  let supersampleCanvas = null;
 
   /* ---------------------------------------------------------------- utils */
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -573,54 +576,50 @@
       state.w, state.h, layer.width / layer.height);
   }
 
-  function refreshRecommendation() {
-    const image = state.layers.find((layer) => layer.visible && layer.kind === 'image');
-    const recommendation = image ? recommendImage(image) : null;
-    state.recommendation = recommendation;
-    if (state.autoConvert) {
-      const dither = state.params.dither;
-      state.pre = Object.assign({}, PRE_DEFAULTS, recommendation?.pre);
-      state.params = Object.assign({}, PARAM_DEFAULTS, recommendation?.params);
-      state.params.dither = dither;
+  function recommendLayer(layer) {
+    layer.recommendation = recommendImage(layer);
+    if (!layer.manual) {
+      layer.pre = { ...PRE_DEFAULTS, ...layer.recommendation.pre };
+      layer.params = { ...EMPTY_PARAMS, ...layer.recommendation.params };
     }
-    if (!state.ditherManual) state.params.dither = recommendation?.params.dither || 'none';
+    layer.params.dither = layer.dither || layer.recommendation.params.dither;
   }
 
   function updateRecommendationUI() {
-    const { autoConvert, recommendation, params, layers } = state;
-    const title = !recommendation && autoConvert
-      ? '图层合成'
-      : autoConvert && !state.ditherManual
-        ? '自动转换 · ' + IMAGE_KINDS[recommendation.kind]
-        : '手动参数';
-    const image = activeImageLayer();
-    const fit = image ? (image.fit === 'cover' ? '裁切铺满' : '完整放入') : '';
-    const algorithm = B.normalizeParams(params).dither;
-    const dither = algorithm === 'none' ? '无抖动' :
-      $('quickDither').querySelector('option[value="' + algorithm + '"]').textContent;
+    const layer = state.activeLayer;
+    if (!layer) return;
+    const title = layer.kind !== 'image' ? layer.name
+      : layer.manual ? '手动转换' : '自动转换 · ' + IMAGE_KINDS[layer.recommendation.kind];
+    const fit = layer.kind === 'image' ? (layer.fit === 'cover' ? '裁切铺满' : '完整放入') : '';
     $('recommendationTitle').textContent = title;
-    $('recommendationText').textContent = [fit, dither, layers.length > 1 ? layers.length + ' 个图层' : ''].filter(Boolean).join(' · ');
-    const colorMix = state.colorMix;
-    const colorSummary = $('colorSummary');
-    colorSummary.hidden = state.colorMode !== 'bwr' || !colorMix;
-    if (colorMix) {
-      const shares = colorMix.ratios.map((ratio, i) => RGB_CHANNELS[i] + ' ' + pct(ratio));
-      shares.push('中性 ' + pct(colorMix.neutral));
-      if (params.mode === 'dominant' && colorMix.channel !== null) {
-        shares.push(RGB_CHANNELS[colorMix.channel] + ' → 红墨');
-      }
-      colorSummary.textContent = shares.join(' · ');
+    $('recommendationText').textContent = fit;
+    $('recommendationText').hidden = !fit;
+    const mix = layer.cache?.mix;
+    const summary = $('colorSummary');
+    summary.hidden = !hasAccent() || !mix || layer.kind !== 'image';
+    if (summary.hidden) return;
+    const shares = mix.ratios.map((ratio, i) => RGB_CHANNELS[i] + ' ' + pct(ratio));
+    shares.push('中性 ' + pct(mix.neutral));
+    if (layer.mapping === 'auto' && mix.channel !== null) {
+      shares.push(RGB_CHANNELS[mix.channel] + ' → ' + PANELS.modes[state.colorMode].inks[2] + '墨');
     }
+    summary.textContent = shares.join(' · ');
   }
 
   function selectLayer(layer) {
     endStageInteraction();
+    endHistDrag();
     state.activeLayer = layer;
-    state.drawing = state.drawing && layer?.kind === 'ink' && layer.visible;
-    syncLayerUI();
-    updateSourceUI();
-    updateRecommendationUI();
+    state.erasing = false;
+    syncControls();
     drawStage();
+    updateRecommendationUI();
+  }
+
+  function newLayer(kind, properties) {
+    return { kind, visible: true, revision: 0, erasures: [], ...DEFAULT_TRANSFORM,
+      pre: { ...PRE_DEFAULTS }, params: { ...EMPTY_PARAMS },
+      mapping: kind === 'image' ? 'auto' : 'ink', accentColor: '#0080ff', ...properties };
   }
 
   function setImage(img, name, target = activeImageLayer()) {
@@ -629,16 +628,17 @@
     if (layer) {
       if (typeof layer.source.close === 'function') layer.source.close();
     } else {
-      layer = { kind: 'image', visible: true, fit: 'contain', autoFrame: true, ...DEFAULT_TRANSFORM };
+      layer = newLayer('image', { fit: state.layers.some(item => item.kind === 'image') ? 'contain' : 'cover' });
       state.layers.push(layer);
     }
     layer.source = img;
     layer.name = name || '未命名图片';
     layer.width = img.naturalWidth || img.width;
     layer.height = img.naturalHeight || img.height;
-    if (layer.autoFrame) layer.fit = recommendImage(layer).fit;
+    layer.erasures = [];
+    layer.revision++;
+    recommendLayer(layer);
     if (!target || target === state.activeLayer) selectLayer(layer);
-    refreshRecommendation();
     syncControls();
     renderLayerList();
     if (state.autoFit) fitView(false);
@@ -649,22 +649,21 @@
 
   function addInkLayer() {
     const number = ++inkCount;
-    const layer = {
-      kind: 'ink', name: number === 1 ? '手写' : '手写 ' + number, visible: true,
-      width: state.w, height: state.h, strokes: [], ...DEFAULT_TRANSFORM,
-    };
+    const layer = newLayer('ink', {
+      name: number === 1 ? '手写' : '手写 ' + number,
+      width: state.w, height: state.h, strokes: [],
+    });
     state.layers.push(layer);
     return layer;
   }
 
   function addTextLayer() {
     const number = ++textCount;
-    const layer = {
-      kind: 'text', name: number === 1 ? '文字' : '文字 ' + number, visible: true,
-      width: state.w, height: state.h, text: '', ink: B.BLACK,
+    const layer = newLayer('text', {
+      name: number === 1 ? '文字' : '文字 ' + number,
+      width: state.w, height: state.h, text: '', ink: '#000000',
       fontSize: Math.max(4, Math.round(Math.min(state.w, state.h) * 0.1)),
-      ...DEFAULT_TRANSFORM,
-    };
+    });
     state.layers.push(layer);
     selectLayer(layer);
     renderLayerList();
@@ -673,32 +672,6 @@
     if (state.autoFit) fitView(false);
     rebuildSource();
     $('textBody').focus();
-  }
-
-  function setDrawing(on, layer) {
-    if (!on) {
-      state.drawing = false;
-      endStageInteraction();
-      syncLayerUI();
-      drawStage();
-      return;
-    }
-
-    if (!layer) {
-      layer = state.activeLayer?.kind === 'ink' ? state.activeLayer
-        : state.layers.slice().reverse().find((item) => item.kind === 'ink');
-      if (!layer) layer = addInkLayer();
-    }
-
-    layer.visible = true;
-    selectLayer(layer);
-    state.drawing = true;
-    setView('result');
-    if (state.split) setSplit(false);
-    syncLayerUI();
-    renderLayerList();
-    if (state.autoFit) fitView(false);
-    rebuildSource();
   }
 
   function chooseFile(add = false) {
@@ -799,10 +772,11 @@
       scale: base * layer.zoom / 100 };
   }
 
-  function drawStrokes(ctx, layer, inks) {
+  function drawStrokes(ctx, strokes) {
     ctx.lineCap = ctx.lineJoin = 'round';
-    for (const stroke of layer.strokes) {
-      ctx.strokeStyle = ctx.fillStyle = inks[stroke.ink];
+    for (const stroke of strokes) {
+      ctx.globalCompositeOperation = stroke.ink ? 'source-over' : 'destination-out';
+      ctx.strokeStyle = ctx.fillStyle = stroke.ink || '#000';
       ctx.lineWidth = stroke.width;
       const start = stroke.points[0];
       ctx.beginPath();
@@ -832,47 +806,92 @@
     }
   }
 
-  function drawArtwork(ctx, mask = false) {
-    const { K, W, R } = state.paletteHex;
-    const inks = mask ? MASK_INKS.slice() : [K, W, R];
-    if (state.colorMode === 'bw') inks[B.RED] = inks[B.BLACK];
-    let hasInk = false;
+  function layerRaster(layer) {
+    const { w, h, colorMode } = state;
+    const key = [w, h, colorMode, layer.revision, layer.x, layer.y, layer.angle, layer.zoom, layer.fit].join('/');
+    if (layer.cache?.key === key) return layer.cache;
+    const canvas = layer.cache?.canvas || newCanvas(w, h);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+
+    const ss = layer.kind === 'image' && w * h <= 250000 ? 2 : 1;
+    if (ss === 2 && !supersampleCanvas) supersampleCanvas = newCanvas(w * ss, h * ss);
+    const raster = ss === 1 ? canvas : supersampleCanvas;
+    if (raster.width !== w * ss || raster.height !== h * ss) {
+      raster.width = w * ss; raster.height = h * ss;
+    }
+    const ctx = ctx2(raster);
+    ctx.clearRect(0, 0, raster.width, raster.height);
+    const geometry = layerGeometry(layer);
+    ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
+    ctx.scale(ss, ss);
+    ctx.translate(geometry.x, geometry.y);
+    ctx.rotate(geometry.radians);
+    ctx.scale(geometry.scale, geometry.scale);
+    if (layer.kind === 'ink') {
+      const operations = [...layer.strokes, ...layer.erasures].sort((a, b) => a.order - b.order);
+      drawStrokes(ctx, operations);
+    } else {
+      if (layer.kind === 'text') drawText(ctx, layer, layer.ink);
+      else ctx.drawImage(layer.source, -layer.width / 2, -layer.height / 2);
+      drawStrokes(ctx, layer.erasures);
+    }
+    ctx.restore();
+    if (ss === 2) {
+      const output = ctx2(canvas);
+      output.clearRect(0, 0, w, h);
+      output.imageSmoothingQuality = 'high';
+      output.drawImage(raster, 0, 0, w, h);
+    }
+    layer.cache = { canvas, key };
+    return layer.cache;
+  }
+
+  function drawArtwork(ctx) {
     for (const layer of state.layers) {
-      if (!layer.visible) continue;
-      if (mask && layer.kind === 'image' && !hasInk) continue;
-      const t = layerGeometry(layer);
-      ctx.save();
-      ctx.translate(t.x, t.y);
-      ctx.rotate(t.radians);
-      ctx.scale(t.scale, t.scale);
-      if (layer.kind === 'ink') {
-        drawStrokes(ctx, layer, inks);
-        hasInk ||= layer.strokes.length > 0;
-      } else if (layer.kind === 'text') {
-        drawText(ctx, layer, inks[layer.ink]);
-        hasInk ||= layer.text.trim().length > 0;
-      } else {
-        if (mask) ctx.globalCompositeOperation = 'destination-out';
-        ctx.drawImage(layer.source, -layer.width / 2, -layer.height / 2);
-      }
-      ctx.restore();
+      if (layer.visible) ctx.drawImage(layerRaster(layer).canvas, 0, 0);
     }
   }
 
-  function rebuildInkMask(w, h) {
-    if (!state.layers.some((layer) => layer.visible && (layer.strokes?.length || layer.text?.trim()))) return null;
-    if (!maskCanvas) {
-      maskCanvas = newCanvas(w, h);
-      maskCtx = ctx2(maskCanvas);
-    } else if (maskCanvas.width !== w || maskCanvas.height !== h) {
-      maskCanvas.width = w;
-      maskCanvas.height = h;
+  function convertLayer(layer) {
+    const { w, h, colorMode, palette } = state;
+    const cache = layerRaster(layer);
+    const key = JSON.stringify([layer.pre, layer.params, layer.mapping, layer.accentColor]);
+    if (cache.convertKey === key) return cache;
+    const rgba = cache.rgba ||= ctx2(cache.canvas).getImageData(0, 0, w, h).data;
+    const params = { ...layer.params };
+    let accentChannel, accentColor;
+    if (hasAccent()) {
+      if (layer.mapping === 'auto') {
+        cache.mix ||= B.colorMix(rgba);
+        accentChannel = cache.mix.channel;
+        params.mode = 'dominant';
+      } else if (layer.mapping === 'color') {
+        accentColor = B.hexToRgb(layer.accentColor);
+        params.mode = 'dominant';
+      } else if (RGB_CHANNELS.includes(layer.mapping)) {
+        accentChannel = RGB_CHANNELS.indexOf(layer.mapping);
+        params.mode = 'dominant';
+      } else if (layer.mapping === 'natural') {
+        params.mode = 'nearest';
+        params.warmOnly = colorMode === 'bwr' && params.warmOnly;
+      } else if (layer.mapping === 'mono') {
+        params.mode = 'mono';
+      }
+      if (layer.kind === 'image') cache.mix ||= B.colorMix(rgba);
     }
-    maskCtx.clearRect(0, 0, w, h);
-    drawArtwork(maskCtx, true);
-    return maskCtx.getImageData(0, 0, w, h).data;
+    if (layer.mapping === 'ink') Object.assign(params, { mode: 'nearest', warmOnly: false });
+    if (layer.mapping === 'mono') params.mode = 'mono';
+    const pre = layer.mapping === 'ink' ? {} : layer.pre;
+    cache.processed = B.preprocess(rgba, w, h, { ...pre, preserveAlpha: true });
+    cache.codes = B.quantize({
+      w, h, rgb: cache.processed.rgb, palette, params, colorMode, sourceRGBA: rgba,
+      accentChannel, accentColor,
+    });
+    cache.histogram = null;
+    cache.convertKey = key;
+    return cache;
   }
 
   function rebuildSource() {
@@ -880,11 +899,16 @@
     rafSource = 0;
     clearTimeout(editTimer);
     editTimer = 0;
+    reprocess();
+  }
+
+  /* ---------------------------------------------------------------- 转换 */
+  function reprocess() {
+    cancelAnimationFrame(rafProcess);
+    rafProcess = 0;
     if (!state.layers.length) {
-      state.sourceData = null; state.processed = null; state.codes = null; state.inkMask = null;
-      state.colorMix = null;
+      state.sourceData = state.processed = state.codes = state.metrics = state.pack = null;
       state.resultCanvas = state.sourceCanvas = state.bwCanvas = state.redCanvas = null;
-      state.metrics = null; state.pack = null;
       state.hover = null;
       lastHoverKey = '';
       updateSourceUI();
@@ -895,81 +919,31 @@
       window.dispatchEvent(new Event('bwr:render'));
       return;
     }
-    const w = state.w, h = state.h;
-    const ss = (w * h <= 250000) ? 2 : 1;
-    const cw = w * ss, ch = h * ss;
-    const g = getWorkCanvas(cw, ch);
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = '#ffffff';
-    g.fillRect(0, 0, cw, ch);
 
-    g.save();
-    g.scale(ss, ss);
-    drawArtwork(g);
-    g.restore();
-    state.inkMask = rebuildInkMask(w, h);
-
-    const big = g.getImageData(0, 0, cw, ch);
-    state.sourceData = ss === 1 ? big : downsample2x(big, w, h);
-    state.colorMix = state.layers.some(layer => layer.visible && layer.kind === 'image')
-      ? B.colorMix(state.sourceData.data, state.inkMask) : null;
-    state.processed = null;
-    reprocess();
-  }
-
-  function downsample2x(image, w, h) {
-    const result = new ImageData(w, h);
-    const src = image.data, dst = result.data;
-    const stride = image.width * 4;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * 2 * stride + x * 8;
-        const o = (y * w + x) * 4;
-        for (let c = 0; c < 3; c++) {
-          dst[o + c] = (src[i + c] + src[i + c + 4] + src[i + c + stride] + src[i + c + stride + 4]) / 4;
-        }
-        dst[o + 3] = 255;
-      }
-    }
-    return result;
-  }
-
-  /* ---------------------------------------------------------------- 转换 */
-  function reprocess() {
-    cancelAnimationFrame(rafProcess);
-    rafProcess = 0;
-    if (!state.sourceData) {
-      updateEmptyOutputs(); drawStage(); return;
-    }
     const t0 = performance.now();
-    const w = state.w, h = state.h;
-    const pre = state.colorMode === 'bw' ? { ...state.pre, redBoost: 0 } : state.pre;
-    const preKey = JSON.stringify(pre);
-    if (!state.processed || lastPreKey !== preKey) {
-      state.processed = B.preprocess(state.sourceData.data, w, h, pre);
-      lastPreKey = preKey;
-    }
-    const codes = B.quantize({
-      w: w, h: h, rgb: state.processed.rgb,
-      palette: state.palette, params: state.params, colorMode: state.colorMode,
-      sourceRGBA: state.sourceData.data, accentChannel: state.colorMix?.channel,
-    });
-    // 笔画和文字直出所选墨色。上方图片已按透明度从遮罩中扣除。
-    if (state.inkMask) {
-      for (let i = 0, o = 0; i < codes.length; i++, o += 4) {
-        if (state.inkMask[o + 3] < 128) continue;
-        codes[i] = state.inkMask[o + 1] >= 128 ? B.WHITE
-          : state.inkMask[o] >= 128 ? B.RED : B.BLACK;
+    const { w, h } = state;
+    const codes = new Uint8Array(w * h).fill(B.WHITE);
+    const ctx = getWorkCanvas(w, h);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    for (const layer of state.layers) {
+      if (!layer.visible) continue;
+      const converted = convertLayer(layer);
+      ctx.drawImage(converted.canvas, 0, 0);
+      for (let i = 0; i < codes.length; i++) {
+        if (converted.rgba[i * 4 + 3] >= 128) codes[i] = converted.codes[i];
       }
     }
     state.codes = codes;
+    state.sourceData = ctx.getImageData(0, 0, w, h);
+    state.processed = B.preprocess(state.sourceData.data, w, h);
 
     const resultRGBA = B.codesToRGBA(codes, state.palette);
     state.resultCanvas = setCanvasRGBA(state.resultCanvas, w, h, resultRGBA);
-    state.sourceCanvas = setCanvasRGBA(state.sourceCanvas, w, h, B.rgbToRGBA(state.processed.rgb));
-    state.bwCanvas = layerCanvas(state.bwCanvas, 'bw', codes, w, h);
-    state.redCanvas = state.colorMode === 'bwr' ? layerCanvas(state.redCanvas, 'red', codes, w, h) : null;
-    state.metrics = B.analyze(codes, state.processed.rgb, w, h, state.palette);
+    state.sourceCanvas = setCanvasRGBA(state.sourceCanvas, w, h, state.sourceData.data);
+    state.bwCanvas = PANELS.modes[state.colorMode].bits === 1 ? layerCanvas(state.bwCanvas, 'bw', codes, w, h) : null;
+    state.redCanvas = hasAccent() ? layerCanvas(state.redCanvas, 'red', codes, w, h) : null;
+    state.metrics = state.debugOpen ? B.analyze(codes, state.processed.rgb, w, h, state.palette) : null;
     updatePack();
     state.renderMs = performance.now() - t0;
 
@@ -1007,7 +981,8 @@
 
   function updatePack() {
     state.pack = B.pack(state.codes, state.w, state.h, {
-      colorMode: state.colorMode, encoding: state.encoding, invertBW: state.invertBW, invertRed: state.invertRed,
+      colorMode: state.colorMode, encoding: state.encoding,
+      invertBW: PANELS.modes[state.colorMode].bits === 1 && state.invertBW, invertRed: state.invertRed,
     });
   }
 
@@ -1177,14 +1152,18 @@
   function updateStats() {
     const m = state.metrics;
     if (!m) return;
-    const c = m.coverage;
-    $('covK').textContent = Math.round(c[0] * 100) + '%';
-    $('covW').textContent = Math.round(c[1] * 100) + '%';
-    $('covR').textContent = Math.round(c[2] * 100) + '%';
-    const bar = $('covBar');
-    bar.children[0].style.width = (c[0] * 100) + '%';
-    bar.children[1].style.width = (c[1] * 100) + '%';
-    bar.children[2].style.width = (c[2] * 100) + '%';
+    const { colors, inks } = PANELS.modes[state.colorMode];
+    $('covBar').replaceChildren();
+    $('covLabels').replaceChildren();
+    for (let i = 0; i < colors.length; i++) {
+      const part = document.createElement('i');
+      part.style.background = colors[i];
+      part.style.width = pct(m.coverage[i]);
+      $('covBar').append(part);
+      const label = document.createElement('span');
+      label.textContent = inks[i] + ' ' + pct(m.coverage[i], 0);
+      $('covLabels').append(label);
+    }
     $('mDE').textContent = m.deltaE.toFixed(2);
     $('mTrans').textContent = (m.transitions * 100).toFixed(1) + '%';
     $('mRedComp').textContent = String(m.redComponents);
@@ -1194,26 +1173,14 @@
     $('mPixels').textContent = state.w + '×' + state.h;
     $('mBytes').textContent = state.pack.bytes + ' B · ' + Math.ceil(state.pack.bytes / 120) + ' 块';
     $('renderTime').textContent = state.renderMs.toFixed(0) + ' ms';
-    $('sizeBadge').textContent = state.w + '×' + state.h;
-    $('bwInfo').textContent = state.pack.planeBytes + ' B';
-    $('redInfo').textContent = state.pack.plane1 ? state.pack.planeBytes + ' B' : '—';
-    $('allInfo').textContent = state.pack.bytes + ' B';
-    $('sizeBadge').textContent = state.w + '×' + state.h;
 
-    let hint = '先把“视觉误差”压低，再看红连通块：照片的网点会天然产生很多小红块，图标则应是一整块。';
-    if (m.isolatedRed > 800) hint = '孤立红点很多：红墨倾向可能过高，或抖动强度太大。先降低红墨倾向 / 提高红墨门槛。';
-    else if (state.params.mode === 'duotone' && m.deltaE > 8) hint = '红当灰是风格化模式：红墨本身比纸暗，ΔE 会偏高，不代表参数错了；看缩略图的层次和红占比。';
-    else if (m.deltaE > 25) hint = '视觉误差很高：三色只剩明暗，先调对比度 / 黑白阈值；彩色照片的 ΔE 不可能很低。';
-    else if (m.deltaE > 9) hint = 'ΔE 偏高对三色照片是正常的（彩色被压成三色）；重点看缩略图的明暗结构与红块是否完整。';
-    else if (m.deltaE < 3 && c[2] < 0.01) hint = '画面几乎没有红墨。若源图有红色，检查红墨倾向、红墨门槛和红度阈值。';
-    else if (m.redComponents > 400 && c[2] > 0.12) hint = '红块很多但都小：这是红墨在做灰阶；如果只想要“红色物体”，改用最近色 + 红墨门槛。';
-    $('metricHint').textContent = state.colorMode === 'bw' ? '用视觉误差和网点密度比较抖动效果。' : hint;
+
   }
 
   function updateThumbs() {
     if (!state.resultCanvas) return;
     drawThumb($('thumbResult'), state.resultCanvas);
-    drawThumb($('thumbBW'), state.bwCanvas);
+    if (state.bwCanvas) drawThumb($('thumbBW'), state.bwCanvas);
     if (state.redCanvas) drawThumb($('thumbRED'), state.redCanvas);
   }
 
@@ -1234,16 +1201,23 @@
   function updateExportInfo() {
     if (!state.pack) return;
     const p = state.pack;
+    $('sizeBadge').textContent = state.w + '×' + state.h;
+    $('bwInfo').textContent = p.planeBytes + ' B';
+    $('redInfo').textContent = p.plane1 ? p.planeBytes + ' B' : '—';
+    $('allInfo').textContent = p.bytes + ' B';
     $('crc0').textContent = '0x' + hex4(p.crc0) + ' (' + p.crc0 + ')';
     $('crc1').textContent = p.crc1 === null ? '—' : '0x' + hex4(p.crc1) + ' (' + p.crc1 + ')';
     $('crcAll').textContent = '0x' + hex4(p.crcAll) + ' (' + p.crcAll + ')';
     $('byteCount').textContent = p.bytes + ' B';
-    $('planeBadge').textContent = !p.plane1 ? '黑白单平面' : state.encoding === 'gateway' ? '网关双平面' : '驱动双平面';
+    $('planeBadge').textContent = !p.plane1 ? PANELS.modes[state.colorMode].label :
+      state.encoding === 'gateway' ? '网关双平面' : '驱动双平面';
     updateStatus();
   }
 
   function updateEmptyOutputs() {
-    ['covK', 'covW', 'covR', 'mDE', 'mTrans', 'mRedComp', 'mIsolated', 'mSrcRed'].forEach((id) => { $(id).textContent = '—'; });
+    $('covBar').replaceChildren();
+    $('covLabels').replaceChildren();
+    ['mDE', 'mTrans', 'mRedComp', 'mIsolated', 'mSrcRed'].forEach((id) => { $(id).textContent = '—'; });
     $('mRedCompSub').textContent = '最大 —';
     $('mPixels').textContent = state.w + '×' + state.h;
     $('mBytes').textContent = '—';
@@ -1258,101 +1232,60 @@
     });
     $('statusLeft').textContent = '等待图片';
     $('statusRight').textContent = '';
-    $('metricHint').textContent = '载入图片后显示统计。';
   }
 
   /* ---------------------------------------------------------------- 直方图 */
   function drawHistogram() {
     const cv = $('hist');
-    if (!cv || $('ruleOpts').hidden) return;
-    const rect = cv.getBoundingClientRect();
-    if (!rect.width) return;
+    const width = cv.getBoundingClientRect().width;
+    if (!width) return;
+    const height = 84;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const W = rect.width, H = 76;
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-    const g = cv.getContext('2d');
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, W, H);
-    g.fillStyle = '#080b10'; g.fillRect(0, 0, W, H);
-    g.strokeStyle = 'rgba(255,255,255,.05)'; g.lineWidth = 1;
-    for (let i = 1; i < 4; i++) {
-      const x = Math.round(W * i / 4) + 0.5;
-      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
-    }
-    if (!state.processed) return;
+    cv.width = Math.round(width * dpr);
+    cv.height = Math.round(height * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#171a21';
+    ctx.fillRect(0, 0, width, height);
 
-    const lum = state.processed.lum, rgb = state.processed.rgb;
-    const lh = new Uint32Array(256), rh = new Uint32Array(256);
-    let maxL = 1, maxR = 1;
-    for (let i = 0; i < lum.length; i++) {
-      const lv = clamp(Math.round(lum[i]), 0, 255);
-      lh[lv]++;
-      if (lh[lv] > maxL) maxL = lh[lv];
-      const s = Math.round(rgb[i * 3] - Math.max(rgb[i * 3 + 1], rgb[i * 3 + 2]));
-      if (s > 0) {
-        const sv = clamp(s, 0, 255);
-        rh[sv]++;
-        if (rh[sv] > maxR) maxR = rh[sv];
+    const cache = activeImageLayer()?.cache;
+    if (!cache?.processed) return;
+    if (!cache.histogram) {
+      const bins = Array.from({ length: 4 }, () => new Uint32Array(256));
+      const { lum, rgb } = cache.processed;
+      for (let i = 0; i < lum.length; i++) {
+        if (cache.rgba[i * 4 + 3] < 128) continue;
+        for (let c = 0; c < 3; c++) bins[c][Math.round(rgb[i * 3 + c])]++;
+        bins[3][Math.round(lum[i])]++;
       }
+      cache.histogram = bins;
     }
-    const barW = W / 256;
-    for (let i = 0; i < 256; i++) {
-      const h = lh[i] / maxL * (H - 8);
-      g.fillStyle = 'rgba(170,185,204,.55)';
-      g.fillRect(i * barW, H - h, barW + 0.6, h);
-    }
-    for (let i = 0; i < 256; i++) {
-      const h = rh[i] / maxR * (H - 8) * 0.75;
-      g.fillStyle = 'rgba(224,80,85,.55)';
-      g.fillRect(i * barW, H - h, barW + 0.6, h);
-    }
-
-    const p = state.params;
-    const marks = [
-      { v: p.dark, c: '#cfd9e5', label: '暗' },
-      { v: p.light, c: '#ffffff', label: '亮' },
-      { v: p.redScore, c: '#e05055', label: '红' },
-    ];
-    g.font = '9px ui-monospace, Consolas, monospace';
-    marks.forEach((m) => {
-      const x = clamp(m.v, 0, 255) / 255 * W;
-      g.strokeStyle = m.c; g.lineWidth = m.label === '红' ? 1.2 : 1;
-      g.beginPath(); g.moveTo(Math.round(x) + 0.5, 0); g.lineTo(Math.round(x) + 0.5, H); g.stroke();
-      g.fillStyle = m.c;
-      g.fillRect(Math.round(x) - 2, 0, 5, 3);
-      g.fillText(m.label, clamp(x + 3, 1, W - 12), 11);
+    const colors = ['#ff6464', '#55e08c', '#62a3ff', '#e3e8ef'];
+    cache.histogram.forEach((bins, channel) => {
+      const max = Math.max(1, ...bins);
+      ctx.strokeStyle = colors[channel];
+      ctx.beginPath();
+      bins.forEach((count, i) => {
+        const x = i * width / 255;
+        const y = height - 1 - Math.sqrt(count / max) * (height - 8);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
     });
+    const x = state.params.threshold * width / 255;
+    ctx.strokeStyle = '#ffe084';
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
   }
 
-  function histValue(e) {
-    const r = $('hist').getBoundingClientRect();
-    return clamp((e.clientX - r.left) / r.width * 255, 0, 255);
-  }
-
-  function startHistDrag(e) {
-    if (!state.processed) return;
-    const v = histValue(e);
-    const p = state.params;
-    const cands = [
-      { k: 'dark', v: p.dark },
-      { k: 'light', v: p.light },
-      { k: 'redScore', v: p.redScore },
-    ];
-    let best = cands[0], bd = Infinity;
-    cands.forEach((c) => { const d = Math.abs(c.v - v); if (d < bd) { bd = d; best = c; } });
-    histDrag = bd <= 26 ? best.k : (v < 128 ? 'dark' : 'light');
-    $('hist').setPointerCapture(e.pointerId);
-    applyHistDrag(v);
-  }
-
-  function applyHistDrag(v) {
-    if (!histDrag) return;
-    const p = state.params;
-    const iv = Math.round(v);
-    if (histDrag === 'dark') p.dark = clamp(iv, 1, p.light - 1);
-    else if (histDrag === 'light') p.light = clamp(iv, p.dark + 1, 255);
-    else p.redScore = clamp(iv, 0, 255);
-    syncRuleControls();
+  function moveHistogramThreshold(e) {
+    if (histDrag === null || !activeImageLayer()) return;
+    const box = $('hist').getBoundingClientRect();
+    state.params.threshold = clamp(Math.round((e.clientX - box.left) * 255 / box.width), 1, 254);
+    syncAdjustmentUI();
     scheduleProcess();
   }
 
@@ -1360,7 +1293,7 @@
 
   /* ---------------------------------------------------------------- 交互 */
   function scheduleProcess(manual = true) {
-    if (manual) state.autoConvert = false;
+    if (manual && state.activeLayer) state.activeLayer.manual = true;
     if (!rafProcess && !rafSource && !isEditingArtwork()) rafProcess = requestAnimationFrame(reprocess);
   }
 
@@ -1401,25 +1334,28 @@
     document.body.classList.toggle('debug-mode', open);
     const button = $('debugBtn');
     button.setAttribute('aria-expanded', String(open));
-    button.textContent = open ? '完成调试' : '手动调试';
+    button.textContent = open ? '退出手动模式' : '手动模式';
     for (const id of ['debugSettings', 'debugDetails', 'debugToolbar', 'debugStatus']) {
       $(id).hidden = !open;
     }
-    fitView();
-    drawHistogram();
+    fitView(false);
+    reprocess();
   }
 
   function restoreAutomatic() {
-    state.autoConvert = true;
-    state.ditherManual = false;
-    state.autoFit = true;
-    const image = activeImageLayer();
-    if (image) Object.assign(image, DEFAULT_TRANSFORM, { autoFrame: true, fit: recommendImage(image).fit });
-    resetPalette();
-    refreshRecommendation();
+    const layer = state.activeLayer;
+    if (!layer) return;
+    layer.manual = false;
+    layer.preset = '';
+    layer.dither = null;
+    layer.mapping = layer.kind === 'image' ? 'auto' : 'ink';
+    if (layer.kind === 'image') recommendLayer(layer);
+    else {
+      layer.pre = { ...PRE_DEFAULTS };
+      layer.params = { ...EMPTY_PARAMS };
+    }
     syncControls();
-    fitView(false);
-    rebuildSource();
+    reprocess();
   }
 
   function syncFramingUI() {
@@ -1435,21 +1371,27 @@
   function syncLayerUI() {
     const layer = state.activeLayer;
     const index = state.layers.indexOf(layer);
-    const transform = !!layer && state.transformOpen;
-    $('transformBtn').hidden = !layer;
-    $('transformBtn').setAttribute('aria-expanded', String(transform));
-    $('layerTransform').hidden = !transform;
-    $('transformName').textContent = layer?.name || '构图';
+    state.drawing = !!(layer?.visible && layer.kind === 'ink' && !state.erasing);
+    $('layerTransform').hidden = !layer;
     $('fitField').hidden = layer?.kind !== 'image';
-    $('drawMode').checked = state.drawing;
+    $('layerConversion').hidden = !layer;
+    $('eraseBtn').hidden = !layer?.visible;
+    $('eraseBtn').setAttribute('aria-pressed', String(state.erasing));
+    $('eraseBtn').textContent = state.erasing ? '完成擦除' : '擦除';
     $('drawTools').hidden = !state.drawing;
+    $('eraseTools').hidden = !state.erasing;
     $('undoStroke').disabled = !layer?.strokes?.length;
+    $('undoErase').disabled = !layer?.erasures.length;
     const text = layer?.kind === 'text' ? layer : null;
     $('textTools').hidden = !text;
     if (text) {
       if ($('textBody').value !== text.text) $('textBody').value = text.text;
       $('textSize').value = String(text.fontSize);
-      $('textColor').value = String(text.ink === B.RED && state.colorMode === 'bw' ? B.BLACK : text.ink);
+      const colors = PANELS.modes[state.colorMode].colors;
+      const rgb = B.hexToRgb(text.ink);
+      const mapped = B.quantize({ w: 1, h: 1, rgb, palette: state.palette, colorMode: state.colorMode,
+        params: { dither: 'none', warmOnly: false } })[0];
+      $('textColor').value = colors[mapped];
     }
 
     const multiple = state.layers.length > 1;
@@ -1466,11 +1408,12 @@
       button.setAttribute('aria-pressed', String(Number(button.dataset.layer) === index));
     });
     $('view').classList.toggle('editable', !!layer?.visible);
-    $('view').classList.toggle('drawing', state.drawing);
+    $('view').classList.toggle('drawing', state.drawing || state.erasing);
     const touch = matchMedia('(any-pointer: coarse)').matches;
     const hint = touch ? '双指缩放 · 三指旋转' : '滚轮缩放';
-    $('view').title = !layer?.visible ? '' : state.drawing ? '在画布内手写' : '拖动移动图层 · ' + hint;
-    $('editHint').textContent = (state.drawing ? '单指手写 · ' : '拖动移动图层 · ') + hint;
+    const action = state.erasing ? '拖动擦除' : state.drawing ? '单指手写' : '拖动移动图层';
+    $('view').title = layer?.visible ? action + ' · ' + hint : '';
+    if (state.drawing && state.view !== 'result') setView('result');
     syncFramingUI();
   }
 
@@ -1487,6 +1430,7 @@
       button.dataset.layer = i;
       button.setAttribute('aria-pressed', String(layer === state.activeLayer));
       name.textContent = layer.name;
+      button.title = layer.name;
       kind.className = 'layer-kind';
       kind.textContent = layer.visible ? LAYER_KINDS[layer.kind] : '已隐藏';
       button.append(name, kind);
@@ -1497,7 +1441,6 @@
   }
 
   function updateLayerStack() {
-    refreshRecommendation();
     syncControls();
     renderLayerList();
     rebuildSource();
@@ -1516,7 +1459,7 @@
     if (!layer) return;
     endStageInteraction();
     layer.visible = !layer.visible;
-    state.drawing = state.drawing && layer.visible;
+    state.erasing = false;
     updateLayerStack();
   }
 
@@ -1528,106 +1471,79 @@
     state.layers.splice(index, 1);
     layer.source?.close?.();
     selectLayer(state.layers[Math.max(0, index - 1)] || null);
-    if (!state.activeLayer) state.transformOpen = false;
     updateLayerStack();
-    (state.activeLayer ? $('transformBtn') : $('emptyOpen')).focus({ preventScroll: true });
+    (state.activeLayer ? $('angle') : $('emptyOpen')).focus({ preventScroll: true });
   }
 
   function syncColorUI() {
-    const mono = state.colorMode === 'bw';
+    const mode = PANELS.modes[state.colorMode];
     $('colorMode').value = state.colorMode;
-    document.querySelectorAll('[data-bwr]').forEach((item) => { item.hidden = mono; });
-    if (mono && $('brushColor').value === String(B.RED)) $('brushColor').value = String(B.BLACK);
-    if (mono && state.view === 'red') state.view = 'result';
-    $('expBin').textContent = mono ? '单平面 BIN' : '双平面 BIN';
+    document.querySelectorAll('[data-bwr]').forEach((item) => { item.hidden = !hasAccent(); });
+    document.querySelectorAll('[data-accent-name]').forEach((item) => {
+      item.textContent = hasAccent() ? mode.inks[2] + '墨' : '';
+    });
+    $('plane0Label').textContent = mode.bits === 1 ? 'BW 平面' : '位图';
+    for (const item of document.querySelectorAll('[data-accent-plane]')) {
+      item.textContent = (mode.inks[2] || '') + '墨平面';
+    }
+    if (!hasAccent() && state.view === 'red') state.view = 'result';
+    $('expBin').textContent = hasAccent() ? '双平面 BIN' : '位图 BIN';
+    $('invBW').closest('label').hidden = mode.bits !== 1;
+    $('expBW').hidden = mode.bits !== 1;
+    document.querySelectorAll('[data-view="bw"]').forEach(item => { item.hidden = mode.bits !== 1; });
+    if (mode.bits !== 1 && state.view === 'bw') state.view = 'result';
+
+    for (const id of ['textColor', 'brushColor']) {
+      const select = $(id);
+      const previous = select.value;
+      if (select.dataset.mode !== state.colorMode) {
+        select.replaceChildren(...mode.colors.map((color, index) => new Option(mode.inks[index], color)));
+        select.dataset.mode = state.colorMode;
+        if (mode.colors.includes(previous)) select.value = previous;
+      }
+    }
   }
 
-  function syncRuleControls() {
-    const p = state.params;
-    $('dark').value = String(p.dark);
-    $('darkOut').textContent = String(p.dark);
-    $('light').value = String(p.light);
-    $('lightOut').textContent = String(p.light);
-    $('redScore').value = String(p.redScore);
-    $('redScoreOut').textContent = String(p.redScore);
-    $('redSoft').value = String(p.redSoft);
-    $('redSoftOut').textContent = String(p.redSoft);
-    $('redFirst').checked = !!p.redFirst;
-    drawHistogram();
+  function syncAdjustmentUI() {
+    for (const [id, value] of [['bri', state.pre.brightness], ['con', state.pre.contrast],
+      ['threshold', state.params.threshold]]) {
+      $(id).value = value;
+      $(id + 'Out').textContent = value;
+    }
   }
 
   function syncControls() {
-    const pre = state.pre, p = state.params, pal = state.paletteHex;
-    $('bri').value = String(pre.brightness); $('briOut').textContent = String(pre.brightness);
-    $('con').value = String(pre.contrast); $('conOut').textContent = String(pre.contrast);
-    $('gamma').value = String(Math.round(pre.gamma * 100)); $('gammaOut').textContent = pre.gamma.toFixed(2);
-    $('sat').value = String(pre.saturation); $('satOut').textContent = pre.saturation + '%';
-    $('redBoost').value = String(pre.redBoost); $('redBoostOut').textContent = pre.redBoost + '%';
-    $('sharp').value = String(pre.sharpen); $('sharpOut').textContent = pre.sharpen + '%';
-    $('blackClip').value = String(pre.blackClip); $('blackClipOut').textContent = String(pre.blackClip);
-    $('whiteClip').value = String(pre.whiteClip); $('whiteClipOut').textContent = String(pre.whiteClip);
-    $('preInvert').checked = !!pre.invert;
-
-    $('palK').value = pal.K; $('palKHex').value = pal.K;
-    $('palW').value = pal.W; $('palWHex').value = pal.W;
-    $('palR').value = pal.R; $('palRHex').value = pal.R;
-
-    document.querySelectorAll('input[name="mode"]').forEach((r) => { r.checked = r.value === p.mode; });
-    $('space').value = p.space;
-    $('redBias').value = String(p.redBias); $('redBiasOut').textContent = String(p.redBias);
-    $('warmOnly').checked = !!p.warmOnly;
-    $('warmGate').value = String(p.warmGate); $('warmGateOut').textContent = String(p.warmGate);
-    $('dark').value = String(p.dark); $('darkOut').textContent = String(p.dark);
-    $('light').value = String(p.light); $('lightOut').textContent = String(p.light);
-    $('redScore').value = String(p.redScore); $('redScoreOut').textContent = String(p.redScore);
-    $('redSoft').value = String(p.redSoft); $('redSoftOut').textContent = String(p.redSoft);
-    $('redFirst').checked = !!p.redFirst;
-    $('toneRed').value = String(p.toneRed); $('toneRedOut').textContent = String(p.toneRed);
-
-    $('dither').value = p.dither;
-    $('strength').value = String(Math.round(p.strength * 100));
-    $('strengthOut').textContent = Math.round(p.strength * 100) + '%';
-    $('serpentine').checked = !!p.serpentine;
     $('encoding').value = state.encoding;
     $('invBW').checked = !!state.invertBW;
     $('invRed').checked = !!state.invertRed;
-
+    $('imageAdjustments').hidden = !activeImageLayer()?.visible;
+    $('autoBtn').disabled = !state.activeLayer;
+    const layer = state.activeLayer;
+    const mapping = $('layerMapping');
+    const accent = hasAccent();
+    $('mappingField').hidden = state.colorMode === 'bw';
+    $('mapColorField').hidden = !accent || layer?.mapping !== 'color';
+    for (const option of mapping.options) {
+      option.hidden = (option.value === 'ink' && layer?.kind === 'image') ||
+        (!accent && ['auto', 'R', 'G', 'B', 'color'].includes(option.value));
+    }
+    mapping.value = Array.from(mapping.options).some(option => !option.hidden && option.value === layer?.mapping)
+      ? layer.mapping : 'natural';
+    $('mapColor').value = layer?.accentColor || '#0080ff';
+    $('presetField').hidden = layer?.kind !== 'image';
+    $('presetSelect').value = layer?.preset || '';
+    syncAdjustmentUI();
     syncColorUI();
     syncLayerUI();
-    syncModeUI();
     updateDitherUI();
     updateSourceUI();
     updateViewUI();
     updateZoomUI();
-    if (!state.processed) updateEmptyOutputs();
+    drawHistogram();
   }
-
-  function syncModeUI() {
-    const p = state.params;
-    $('nearestOpts').hidden = p.mode !== 'nearest';
-    $('ruleOpts').hidden = p.mode !== 'rule';
-    $('duotoneOpts').hidden = p.mode !== 'duotone';
-    $('warmGateRow').hidden = !p.warmOnly;
-    if (p.mode === 'rule') drawHistogram();
-  }
-
-  const DITHER_HINT = {
-    fs: 'Floyd–Steinberg 把「目标混合比例 − 当前选择」的误差分摊给右 / 左下 / 下 / 右下。最近色模式在 OKLab 里选最近两色，混合比按 Rec601 亮度权重在 sRGB 里算成 0..1，所以误差是一维的，不会在纯白或中性区堆出红点。',
-    atkinson: 'Atkinson 只扩散一部分误差（1/8 × 6），高光更干净、对比更强；适合线稿和强反差照片。',
-    stucki: 'Stucki 的扩散范围更大、权重更细，渐变更平滑，代价是细碎点略多。',
-    bayer4: 'Bayer 4×4 用固定阈值矩阵制造规则网点；目标密度直接和矩阵阈值比较，边缘最硬，适合海报和图标。',
-    bayer8: 'Bayer 8×8 网点更细、层次更多，但可能出现斜向纹理。',
-    none: '关闭抖动：每个像素直接按阈值落墨，色块最干净，适合文字和纯色图标；照片会出现断层。',
-  };
 
   function updateDitherUI() {
-    const d = B.normalizeParams(state.params).dither;
-    $('dither').value = d;
-    $('quickDither').value = state.ditherManual ? d : 'auto';
-    $('ditherBadge').textContent = d === 'none' ? '硬阈值' : ((d === 'bayer4' || d === 'bayer8') ? '有序网点' : '误差扩散');
-    $('strengthRow').hidden = d === 'none';
-    $('serpRow').hidden = d === 'none' || d === 'bayer4' || d === 'bayer8';
-    $('ditherHint').textContent = DITHER_HINT[d] || DITHER_HINT.fs;
+    $('quickDither').value = state.activeLayer?.dither || (activeImageLayer() ? 'auto' : 'none');
   }
 
   function updateViewUI() {
@@ -1650,7 +1566,8 @@
   }
 
   function setView(v) {
-    if (!v || (v === 'red' && state.colorMode === 'bw')) return;
+    if (!['result', 'source', 'bw', 'red'].includes(v) ||
+        (v === 'red' && !hasAccent()) || (v === 'bw' && PANELS.modes[state.colorMode].bits !== 1)) return;
     state.view = v;
     updateViewUI();
     drawStage();
@@ -1699,7 +1616,7 @@
     const l = stageLayout();
     const point = artworkPoint(e, l);
     const preview = state.debugOpen && e.shiftKey;
-    if (!preview && (state.drawing || !layer.visible || !insideArtwork(point))) return;
+    if (!preview && (!layer.visible || !insideArtwork(point))) return;
     e.preventDefault();
     const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? l.rect.height : 1);
     const factor = Math.exp(clamp(-delta * 0.0014, -1, 1));
@@ -1721,7 +1638,6 @@
     layer.zoom = zoom;
     syncFramingUI();
     if (change) {
-      if (layer.kind === 'image') layer.autoFrame = false;
       scheduleSource(true);
     }
   }
@@ -1743,16 +1659,19 @@
     stageDrag = drag;
     if (e.pointerType !== 'touch') $('view').setPointerCapture(e.pointerId);
     if (preview) state.autoFit = false;
-    if (!preview && state.drawing) {
+    if (!preview && (state.drawing || state.erasing)) {
       drag.geometry = layerGeometry(layer);
       drag.stroke = {
-        ink: +$('brushColor').value,
-        width: +$('brushWidth').value / drag.geometry.scale,
+        order: layer.revision,
+        ink: state.erasing ? null : $('brushColor').value,
+        width: +$(state.erasing ? 'eraseWidth' : 'brushWidth').value / drag.geometry.scale,
         points: [localPoint(point, drag.geometry)],
       };
-      layer.strokes.push(drag.stroke);
+      drag.strokes = state.erasing ? layer.erasures : layer.strokes;
+      drag.strokes.push(drag.stroke);
+      layer.revision++;
       drag.changed = true;
-      $('undoStroke').disabled = false;
+      $(state.erasing ? 'undoErase' : 'undoStroke').disabled = false;
       if (state.view !== 'result') setView('result');
       if (state.split) setSplit(false);
       scheduleSource(true);
@@ -1782,10 +1701,10 @@
       const last = points[points.length - 1];
       if (next.x === last.x && next.y === last.y) return;
       points.push(next);
+      drag.layer.revision++;
     } else {
       drag.layer.x = drag.fromX + dx / l.iw;
       drag.layer.y = drag.fromY + dy / l.ih;
-      if (drag.layer.kind === 'image') drag.layer.autoFrame = false;
     }
     drag.changed = true;
     scheduleSource(true);
@@ -1825,8 +1744,10 @@
     if (!layer?.visible) return;
     if (stageDrag?.stroke) {
       // The second finger turns an in-progress touch stroke into a transform.
-      layer.strokes.pop();
-      $('undoStroke').disabled = !layer.strokes.length;
+      stageDrag.strokes.pop();
+      layer.revision++;
+      $('undoStroke').disabled = !layer.strokes?.length;
+      $('undoErase').disabled = !layer.erasures.length;
     }
     endStageDrag();
 
@@ -1900,7 +1821,6 @@
     // Keep the same source point under the fingers, including after fit changes on rotation.
     layer.x = (point.x - (anchor.x * cos - anchor.y * sin) * scale) / state.w - 0.5;
     layer.y = (point.y - (anchor.x * sin + anchor.y * cos) * scale) / state.h - 0.5;
-    if (layer.kind === 'image') layer.autoFrame = false;
     gesture.changed = true;
     syncFramingUI();
     scheduleSource(true);
@@ -1962,10 +1882,12 @@
     }
     const i = h.y * state.w + h.x;
     const raw = state.sourceData.data;
-    const pr = state.processed.rgb;
+    const layer = state.layers.findLast(item => item.visible && item.cache?.rgba?.[i * 4 + 3] >= 128);
+    const processed = layer?.cache.processed || state.processed;
+    const pr = processed.rgb;
     const rr = raw[i * 4], rg = raw[i * 4 + 1], rb = raw[i * 4 + 2];
     const prr = Math.round(pr[i * 3]), prg = Math.round(pr[i * 3 + 1]), prb = Math.round(pr[i * 3 + 2]);
-    const lum = state.processed.lum[i];
+    const lum = processed.lum[i];
     const score = prr - Math.max(prg, prb);
     const code = state.codes ? state.codes[i] : -1;
     $('pxCoord').textContent = h.x + ',' + h.y;
@@ -1973,8 +1895,8 @@
     $('pxProc').textContent = '#' + B.rgbToHex(prr, prg, prb).slice(1) + '  ' + prr + ',' + prg + ',' + prb;
     $('pxLum').textContent = lum.toFixed(1);
     $('pxScore').textContent = String(Math.round(score));
-    $('pxInk').textContent = code < 0 ? '—' : B.INK_NAMES[code] + ' (' + code + ')';
-    $('pxInk').style.color = code === B.RED ? '#a32032' : '';
+    $('pxInk').textContent = code < 0 ? '—' : PANELS.modes[state.colorMode].inks[code] + ' (' + code + ')';
+    $('pxInk').style.color = '';
     $('pxRawSwatch').style.background = 'rgb(' + rr + ',' + rg + ',' + rb + ')';
     $('pxProcSwatch').style.background = 'rgb(' + prr + ',' + prg + ',' + prb + ')';
   }
@@ -1985,7 +1907,7 @@
     if (!state.resultCanvas) { toast('请先添加图片或手写图层', true); return; }
     try {
       const blob = await canvasBlob(state.resultCanvas);
-      saveBlob(blob, baseName() + '-bwr.png');
+      saveBlob(blob, baseName() + '-ink.png');
       toast('已导出合成 PNG（' + state.w + '×' + state.h + '）');
     } catch (e) { toast(e.message, true); }
   }
@@ -2005,7 +1927,7 @@
     finishPendingRender();
     if (!state.pack || (which === 'red' && !state.pack.plane1)) return;
     const p = state.pack;
-    let data = p.data, name = baseName() + (p.plane1 ? '-bwr.bin' : '-bw.bin');
+    let data = p.data, name = baseName() + '-' + state.colorMode + '.bin';
     if (which === 'bw') { data = p.plane0; name = baseName() + '-bw.bin'; }
     if (which === 'red') { data = p.plane1; name = baseName() + '-red.bin'; }
     saveBlob(new Blob([data], { type: 'application/octet-stream' }), name);
@@ -2014,11 +1936,12 @@
 
   function paramsObject() {
     return {
-      tool: 'BWR Lab', version: B.VERSION,
+      tool: 'Ink Studio', version: B.VERSION,
       panel: { w: state.w, h: state.h, colorMode: state.colorMode },
-      palette: { K: state.paletteHex.K, W: state.paletteHex.W, R: state.paletteHex.R },
-      preprocess: Object.assign({}, state.pre),
-      quantize: Object.assign({}, state.params, { strength: +state.params.strength.toFixed(3) }),
+      palette: PANELS.modes[state.colorMode].colors,
+      layers: state.layers.map(({ name, kind, visible, mapping, accentColor, pre, params }) => ({
+        name, kind, visible, mapping, accentColor, preprocess: pre, quantize: params,
+      })),
       packing: {
         encoding: state.encoding,
         invertBW: state.invertBW,
@@ -2060,80 +1983,33 @@
   }
 
   /* ---------------------------------------------------------------- 预设 */
-  function resetPre() { state.pre = Object.assign({}, PRE_DEFAULTS); }
-  function resetParams() { state.params = Object.assign({}, PARAM_DEFAULTS); }
-  function resetPalette() {
-    state.paletteHex = Object.assign({}, PALETTE_DEFAULTS);
-    state.palette = B.makePalette([state.paletteHex.K, state.paletteHex.W, state.paletteHex.R]);
-  }
-
   function applyPreset(name) {
-    state.autoConvert = false;
-    state.ditherManual = true;
-    resetPre(); resetParams();
-    if (name === 'photo') {
-      Object.assign(state.params, { mode: 'nearest', space: 'oklab', dither: 'fs', redBias: -8, warmOnly: true, warmGate: 42 });
-      Object.assign(state.pre, { saturation: 112, redBoost: 14, sharpen: 45, contrast: 4, blackClip: 4, whiteClip: 248 });
-    } else if (name === 'icon') {
-      Object.assign(state.params, { mode: 'nearest', space: 'oklab', dither: 'none', redBias: 12, warmOnly: true, warmGate: 60 });
-      Object.assign(state.pre, { saturation: 105, sharpen: 20, blackClip: 12, whiteClip: 236 });
-    } else if (name === 'redtone') {
-      Object.assign(state.params, { mode: 'duotone', dither: 'fs', toneRed: 130, strength: 1 });
-      Object.assign(state.pre, { contrast: 8, sharpen: 35, saturation: 100, blackClip: 8, whiteClip: 245 });
-    } else if (name === 'poster') {
-      Object.assign(state.params, { mode: 'duotone', dither: 'bayer8', toneRed: 110, strength: 1 });
-      Object.assign(state.pre, { contrast: 16, sharpen: 25, blackClip: 12, whiteClip: 235 });
-    } else if (name === 'text') {
-      Object.assign(state.params, { mode: 'nearest', space: 'oklab', dither: 'none', redBias: 0 });
-      Object.assign(state.pre, { contrast: 35, sharpen: 60, blackClip: 15, whiteClip: 232 });
-    } else {
-      Object.assign(state.params, { mode: 'nearest', space: 'oklab', dither: 'atkinson', redBias: -15, warmOnly: true, warmGate: 50 });
-      Object.assign(state.pre, { saturation: 115, sharpen: 55, blackClip: 5, whiteClip: 248 });
+    const layer = activeImageLayer();
+    if (!layer) return;
+    if (!name) {
+      restoreAutomatic();
+      return;
     }
+    const presets = {
+      photo: { dither: 'fs', contrast: 4, sharpen: 45, whiteClip: 248 },
+      icon: { dither: 'none', contrast: 5, sharpen: 20, whiteClip: 242 },
+      redtone: { dither: 'fs', contrast: 8, saturation: 110, whiteClip: 245 },
+      poster: { dither: 'bayer8', contrast: 16, sharpen: 25, whiteClip: 235 },
+      text: { dither: 'none', contrast: 35, sharpen: 60, whiteClip: 232 },
+      custom: { dither: 'atkinson', contrast: 10, sharpen: 55, whiteClip: 248 },
+    };
+    const preset = presets[name];
+    if (!preset) return;
+    const { dither, ...pre } = preset;
+    layer.preset = name;
+    layer.manual = true;
+    layer.dither = dither;
+    layer.mapping = name === 'icon' || name === 'photo' ? 'natural' : 'auto';
+    if (name === 'text') layer.mapping = 'mono';
+    layer.pre = { ...PRE_DEFAULTS, ...pre };
+    layer.params = { ...EMPTY_PARAMS, dither };
     syncControls();
     reprocess();
-    saveSoon();
-    toast('已应用预设：' + ({ photo: '照片', icon: '图标', redtone: '红调', poster: '海报', text: '文字', custom: '微距' }[name] || name));
-  }
-
-  function autoThresholds() {
-    if (!state.processed) return;
-    const lum = state.processed.lum, rgb = state.processed.rgb;
-    const lh = new Uint32Array(256);
-    for (let i = 0; i < lum.length; i++) lh[clamp(Math.round(lum[i]), 0, 255)]++;
-    const total = lum.length;
-    const pick = (pctv) => {
-      let acc = 0, target = total * pctv;
-      for (let i = 0; i < 256; i++) { acc += lh[i]; if (acc >= target) return i; }
-      return 255;
-    };
-    let dark = pick(0.18), light = pick(0.82);
-    dark = clamp(dark, 1, 250);
-    light = clamp(Math.max(light, dark + 10), 2, 255);
-
-    const rh = new Uint32Array(256);
-    let redTotal = 0;
-    for (let i = 0; i < rgb.length / 3; i++) {
-      const s = Math.round(rgb[i * 3] - Math.max(rgb[i * 3 + 1], rgb[i * 3 + 2]));
-      if (s > 0) { rh[clamp(s, 0, 255)]++; redTotal++; }
-    }
-    let redScore = state.params.redScore;
-    if (redTotal > total * 0.012) {
-      let acc = 0;
-      for (let i = 0; i < 256; i++) {
-        acc += rh[i];
-        if (acc >= redTotal * 0.90) { redScore = i; break; }
-      }
-      redScore = clamp(Math.round(redScore), 30, 160);
-    }
-    state.autoConvert = false;
-    state.params.dark = dark;
-    state.params.light = light;
-    state.params.redScore = redScore;
-    syncRuleControls();
-    reprocess();
-    saveSoon();
-    toast('阈值：暗 ' + dark + ' · 亮 ' + light + ' · 红度 ' + redScore);
   }
 
   /* ---------------------------------------------------------------- 事件 */
@@ -2141,93 +2017,68 @@
     $('debugBtn').addEventListener('click', () => setDebug(!state.debugOpen));
     $('autoBtn').addEventListener('click', restoreAutomatic);
 
-    // ranges: pre
-    bindRange('bri', (v) => { state.pre.brightness = v; }, (v) => String(v));
-    bindRange('con', (v) => { state.pre.contrast = v; }, (v) => String(v));
-    bindRange('gamma', (v) => { state.pre.gamma = v / 100; }, (v) => (v / 100).toFixed(2));
-    bindRange('sat', (v) => { state.pre.saturation = v; }, (v) => v + '%');
-    bindRange('redBoost', (v) => { state.pre.redBoost = v; }, (v) => v + '%');
-    bindRange('sharp', (v) => { state.pre.sharpen = v; }, (v) => v + '%');
-    bindRange('blackClip', (v) => { state.pre.blackClip = v; }, (v) => String(v));
-    bindRange('whiteClip', (v) => { state.pre.whiteClip = v; }, (v) => String(v));
-    $('preInvert').addEventListener('change', (e) => { state.pre.invert = e.target.checked; scheduleProcess(); saveSoon(); });
-    $('preReset').addEventListener('click', () => {
-      state.autoConvert = false;
-      resetPre(); syncControls(); reprocess(); saveSoon(); toast('预处理已归零');
+    bindRange('bri', (v) => { state.pre.brightness = v; }, String);
+    bindRange('con', (v) => { state.pre.contrast = v; }, String);
+    bindRange('threshold', (v) => { state.params.threshold = v; }, String);
+    $('hist').addEventListener('pointerdown', (e) => {
+      histDrag = e.pointerId;
+      $('hist').setPointerCapture(e.pointerId);
+      moveHistogramThreshold(e);
     });
+    $('hist').addEventListener('pointermove', (e) => {
+      if (histDrag === e.pointerId) moveHistogramThreshold(e);
+    });
+    $('hist').addEventListener('lostpointercapture', endHistDrag);
 
-    // palette
-    bindColor('palK', 'K'); bindColor('palW', 'W'); bindColor('palR', 'R');
-    $('palReset').addEventListener('click', () => {
-      state.autoConvert = false;
-      resetPalette(); syncControls(); rebuildSource(); toast('已恢复默认墨色');
-    });
-
-    // mode
-    document.querySelectorAll('input[name="mode"]').forEach((r) => {
-      r.addEventListener('change', () => {
-        if (!r.checked) return;
-        state.params.mode = r.value;
-        syncModeUI();
-        scheduleProcess();
-        saveSoon();
-      });
-    });
-    $('space').addEventListener('change', (e) => { state.params.space = e.target.value; scheduleProcess(); saveSoon(); });
-    bindRange('redBias', (v) => { state.params.redBias = v; }, (v) => String(v));
-    $('warmOnly').addEventListener('change', (e) => {
-      state.params.warmOnly = e.target.checked; syncModeUI(); scheduleProcess(); saveSoon();
-    });
-    bindRange('warmGate', (v) => { state.params.warmGate = v; }, (v) => String(v));
-
-    // rule
-    bindThreshold('dark', 'light');
-    bindThreshold('light', 'dark');
-    bindRange('redScore', (v) => { state.params.redScore = v; }, (v) => String(v));
-    bindRange('redSoft', (v) => { state.params.redSoft = v; }, (v) => String(v));
-    $('redFirst').addEventListener('change', (e) => { state.params.redFirst = e.target.checked; scheduleProcess(); saveSoon(); });
-    bindRange('toneRed', (v) => { state.params.toneRed = v; }, (v) => String(v));
-    $('autoThresh').addEventListener('click', autoThresholds);
-    $('ruleReset').addEventListener('click', () => {
-      state.autoConvert = false;
-      Object.assign(state.params, { dark: 64, light: 192, redScore: 42, redFirst: true, redSoft: 12 });
-      syncRuleControls(); reprocess(); saveSoon(); toast('规则参数已恢复默认');
-    });
-
-    // dither
     $('quickDither').addEventListener('change', (e) => {
-      state.ditherManual = e.target.value !== 'auto';
-      state.params.dither = state.ditherManual ? e.target.value : state.recommendation?.params.dither || 'none';
-      updateDitherUI();
+      const layer = state.activeLayer;
+      if (!layer) return;
+      layer.dither = e.target.value === 'auto' ? null : e.target.value;
+      layer.params.dither = layer.dither || layer.recommendation?.params.dither || 'none';
       scheduleProcess(false);
     });
-    $('dither').addEventListener('change', (e) => {
-      state.ditherManual = true;
-      state.params.dither = e.target.value;
-      updateDitherUI();
-      scheduleProcess();
+    $('layerMapping').addEventListener('change', (e) => {
+      if (!state.activeLayer) return;
+      state.activeLayer.mapping = e.target.value;
+      $('mapColorField').hidden = e.target.value !== 'color';
+      scheduleProcess(false);
     });
-    bindRange('strength', (v) => { state.params.strength = v / 100; }, (v) => v + '%');
-    $('serpentine').addEventListener('change', (e) => { state.params.serpentine = e.target.checked; scheduleProcess(); });
+    $('mapColor').addEventListener('input', (e) => {
+      if (!state.activeLayer) return;
+      state.activeLayer.accentColor = e.target.value;
+      scheduleProcess(false);
+    });
+    $('presetSelect').addEventListener('change', (e) => applyPreset(e.target.value));
 
-    // drawing and layers
-    $('drawMode').addEventListener('change', (e) => setDrawing(e.target.checked));
-    $('brushWidth').addEventListener('input', (e) => { $('brushWidthOut').textContent = e.target.value + ' px'; });
-    $('undoStroke').addEventListener('click', () => {
-      const layer = state.activeLayer;
-      if (!layer?.strokes?.length) return;
+    $('eraseBtn').addEventListener('click', () => {
       endStageInteraction();
-      layer.strokes.pop();
+      state.erasing = !state.erasing;
       syncLayerUI();
-      rebuildSource();
     });
+    for (const [id, undo, key] of [['brushWidth', 'undoStroke', 'strokes'], ['eraseWidth', 'undoErase', 'erasures']]) {
+      $(id).addEventListener('input', (e) => { $(id + 'Out').textContent = e.target.value + ' px'; });
+      $(undo).addEventListener('click', () => {
+        const layer = state.activeLayer;
+        if (!layer?.[key]?.length) return;
+        endStageInteraction();
+        layer[key].pop();
+        layer.revision++;
+        syncLayerUI();
+        rebuildSource();
+      });
+    }
     $('addImageLayer').addEventListener('click', () => {
       $('addLayerMenu').open = false;
       chooseFile(true);
     });
     $('addInkLayer').addEventListener('click', () => {
       $('addLayerMenu').open = false;
-      setDrawing(true, addInkLayer());
+      selectLayer(addInkLayer());
+      renderLayerList();
+      setView('result');
+      if (state.split) setSplit(false);
+      if (state.autoFit) fitView(false);
+      rebuildSource();
     });
     $('addTextLayer').addEventListener('click', () => {
       $('addLayerMenu').open = false;
@@ -2237,12 +2088,14 @@
       const layer = state.activeLayer;
       if (layer?.kind !== 'text') return;
       layer.text = e.target.value;
+      layer.revision++;
       scheduleSource(true);
     });
     $('textSize').addEventListener('input', (e) => {
       const layer = state.activeLayer;
       if (layer?.kind !== 'text' || !e.target.validity.valid || !Number.isFinite(e.target.valueAsNumber)) return;
       layer.fontSize = e.target.valueAsNumber;
+      layer.revision++;
       scheduleSource(true);
     });
     $('textSize').addEventListener('change', (e) => {
@@ -2251,7 +2104,8 @@
     $('textColor').addEventListener('change', (e) => {
       const layer = state.activeLayer;
       if (layer?.kind !== 'text') return;
-      layer.ink = Number(e.target.value);
+      layer.ink = e.target.value;
+      layer.revision++;
       scheduleSource();
     });
     $('layerList').addEventListener('click', (e) => {
@@ -2264,27 +2118,20 @@
     $('removeLayer').addEventListener('click', removeLayer);
 
     // framing
-    $('transformBtn').addEventListener('click', () => {
-      state.transformOpen = !state.transformOpen;
-      syncLayerUI();
-    });
     $('fitSelect').addEventListener('change', (e) => {
       const layer = activeImageLayer();
       if (!layer) return;
-      Object.assign(layer, { fit: e.target.value, autoFrame: false, x: 0, y: 0 });
+      Object.assign(layer, { fit: e.target.value, x: 0, y: 0 });
       rebuildSource();
     });
     $('angle').addEventListener('input', (e) => {
       const layer = state.activeLayer;
       if (layer) setLayerAngle(layer, +e.target.value);
     });
-    $('rotL').addEventListener('click', () => rotateBy(-90));
-    $('rotR').addEventListener('click', () => rotateBy(90));
     $('imgZoom').addEventListener('input', (e) => {
       const layer = state.activeLayer;
       if (!layer) return;
       layer.zoom = +e.target.value;
-      if (layer.kind === 'image') layer.autoFrame = false;
       syncFramingUI();
       scheduleSource(true);
     });
@@ -2327,14 +2174,9 @@
     // panel
     $('colorMode').addEventListener('change', (e) => applyColorMode(e.target.value));
     $('panelSelect').addEventListener('change', (e) => {
-      if (e.target.value === 'custom') {
-        $('sizeCustom').hidden = false;
-        applyPanelSize(+$('customW').value, +$('customH').value, 'custom');
-      } else {
-        $('sizeCustom').hidden = true;
-        const m = e.target.value.match(/^(\d+)x(\d+)$/);
-        if (m) applyPanelSize(+m[1], +m[2], e.target.value);
-      }
+      const panel = panelById.get(e.target.value);
+      if (panel) applyPanelSize(panel.w, panel.h, panel.id, panel.modes[0]);
+      else applyPanelSize(state.w, state.h, 'custom');
     });
     ['customW', 'customH'].forEach((id) => {
       $(id).addEventListener('change', () => {
@@ -2407,24 +2249,6 @@
     });
     $('invBW').addEventListener('change', (e) => { state.invertBW = e.target.checked; repack(); saveSoon(); });
     $('invRed').addEventListener('change', (e) => { state.invertRed = e.target.checked; repack(); saveSoon(); });
-
-    // presets
-    document.querySelectorAll('[data-preset]').forEach((b) => {
-      b.addEventListener('click', () => applyPreset(b.dataset.preset));
-    });
-    $('resetAll').addEventListener('click', () => {
-      state.autoConvert = false;
-      state.ditherManual = true;
-      resetPre(); resetParams(); resetPalette();
-      state.encoding = 'gateway'; state.invertBW = false; state.invertRed = false;
-      syncControls(); rebuildSource(); saveSoon(); toast('全部参数已复位');
-    });
-
-    // histogram
-    $('hist').addEventListener('pointerdown', startHistDrag);
-    $('hist').addEventListener('pointermove', (e) => { if (histDrag) applyHistDrag(histValue(e)); });
-    $('hist').addEventListener('pointerup', endHistDrag);
-    $('hist').addEventListener('pointercancel', endHistDrag);
 
     // drag & drop
     let dragDepth = 0;
@@ -2512,67 +2336,10 @@
     });
   }
 
-  function bindThreshold(id, other) {
-    const e = $(id), o = $(id + 'Out');
-    e.addEventListener('input', () => {
-      const v = +e.value;
-      if (id === 'dark') {
-        state.params.dark = clamp(v, 1, 254);
-        if (state.params.light <= state.params.dark) {
-          state.params.light = Math.min(255, state.params.dark + 1);
-        }
-      } else {
-        state.params.light = clamp(v, 2, 255);
-        if (state.params.dark >= state.params.light) {
-          state.params.dark = Math.max(1, state.params.light - 1);
-        }
-      }
-      e.value = String(state.params[id]);
-      o.textContent = String(state.params[id]);
-      $(other).value = String(state.params[other]);
-      $(other + 'Out').textContent = String(state.params[other]);
-      drawHistogram();
-      scheduleProcess();
-      saveSoon();
-    });
-  }
-
-  function bindColor(id, key) {
-    const color = $(id), hex = $(id + 'Hex');
-    color.addEventListener('input', () => {
-      state.paletteHex[key] = color.value.toLowerCase();
-      hex.value = color.value.toLowerCase();
-      applyPalette();
-    });
-    hex.addEventListener('change', () => {
-      let v = hex.value.trim().toLowerCase();
-      if (!v.startsWith('#')) v = '#' + v;
-      if (!/^#[0-9a-f]{6}$/.test(v)) { hex.value = state.paletteHex[key]; return; }
-      state.paletteHex[key] = v;
-      color.value = v;
-      applyPalette();
-    });
-    hex.addEventListener('keydown', (e) => { if (e.key === 'Enter') hex.blur(); });
-  }
-
-  function applyPalette() {
-    state.palette = B.makePalette([state.paletteHex.K, state.paletteHex.W, state.paletteHex.R]);
-    state.autoConvert = false;
-    scheduleSource();
-  }
-
   function setLayerAngle(layer, angle) {
     layer.angle = angle;
-    if (layer.kind === 'image') layer.autoFrame = false;
     syncFramingUI();
     scheduleSource(true);
-  }
-
-  function rotateBy(deg) {
-    const layer = state.activeLayer;
-    if (!layer) return;
-    const angle = layer.angle + deg;
-    setLayerAngle(layer, angle > 180 ? angle - 360 : angle < -180 ? angle + 360 : angle);
   }
 
   function resetFraming() {
@@ -2583,40 +2350,35 @@
     rebuildSource();
   }
 
-  function applyColorMode(mode) {
-    if ((mode !== 'bw' && mode !== 'bwr') || state.colorMode === mode) return;
-    endStageInteraction();
-    state.colorMode = mode;
-    syncColorUI();
-    syncLayerUI();
-    updateViewUI();
-    rebuildSource();
-    saveSoon();
+  function availableModes(id) {
+    return id.startsWith('epd') ? panelById.get(id).modes : Object.keys(PANELS.modes);
   }
 
-  function applyPanelSize(w, h, id) {
+  function applyColorMode(mode) {
+    if (state.colorMode !== mode && availableModes(state.panelId).includes(mode)) {
+      applyPanelSize(state.w, state.h, state.panelId, mode);
+    }
+  }
+
+  function applyPanelSize(w, h, id, mode = state.colorMode) {
     w = clamp(Math.round(w) || 400, 8, 1024);
     h = clamp(Math.round(h) || 300, 8, 1024);
     endStageInteraction();
-    const select = $('panelSelect');
-    const size = w + 'x' + h;
-    const knownSize = Array.from(select.options).some((option) => option.value === size);
-    state.panelId = id === 'custom' || !knownSize ? 'custom' : size;
-    const sizeChanged = state.w !== w || state.h !== h;
-    state.w = w; state.h = h;
-    if (sizeChanged) {
-      state.hover = null;
-      lastHoverKey = '';
-      for (const layer of state.layers) {
-        if (layer.autoFrame) layer.fit = recommendImage(layer).fit;
-      }
-    }
+    const panel = panelById.get(id);
+    state.panelId = panel?.w === w && panel.h === h ? id : 'custom';
+    state.w = w;
+    state.h = h;
+    state.hover = null;
+    lastHoverKey = '';
+    const modes = availableModes(state.panelId);
+    state.colorMode = modes.includes(mode) ? mode : modes[0];
+    state.palette = B.makePalette(PANELS.modes[state.colorMode].colors);
+    $('colorMode').replaceChildren(...modes.map(key => new Option(PANELS.modes[key].label, key)));
     $('customW').value = String(w);
     $('customH').value = String(h);
-    select.value = state.panelId;
+    $('panelSelect').value = state.panelId;
     $('sizeCustom').hidden = state.panelId !== 'custom';
     state.autoFit = true;
-    refreshRecommendation();
     syncControls();
     fitView(false);
     rebuildSource();
@@ -2650,7 +2412,7 @@
         state.w = clamp(s.panel.w, 8, 1024);
         state.h = clamp(s.panel.h, 8, 1024);
         state.panelId = s.panel.id || (state.w + 'x' + state.h);
-        if (s.panel.colorMode === 'bw') state.colorMode = 'bw';
+        if (Object.hasOwn(PANELS.modes, s.panel.colorMode)) state.colorMode = s.panel.colorMode;
       }
       if (s.encoding === 'gateway' || s.encoding === 'driver') state.encoding = s.encoding;
       state.invertBW = !!s.invertBW;
@@ -2686,14 +2448,15 @@
     }
     if (q.get('mode')) {
       state.params.mode = q.get('mode');
+      if (state.activeLayer) state.activeLayer.mapping = 'query';
       changed = true;
     }
     if (q.get('dither')) {
-      state.ditherManual = true;
       state.params.dither = B.normalizeParams({ dither: q.get('dither') }).dither;
+      if (state.activeLayer) state.activeLayer.dither = state.params.dither;
       changed = true;
     }
-    if (changed) state.autoConvert = false;
+    if (changed && state.activeLayer) state.activeLayer.manual = true;
     if (changed || q.has('view') || q.has('zoom') || q.get('split') === '1') setDebug(true);
     if (q.get('view')) setView(q.get('view'));
     if (q.get('zoom')) {
@@ -2718,24 +2481,27 @@
 
   async function runSelfTest() {
     const out = [];
-    let origPre, origParams;
+    let origParams, origMapping;
     try {
       await loadSample(q.get('sample') || 'chart');
-      origPre = Object.assign({}, state.pre);
-      origParams = Object.assign({}, state.params);
-      const mono = state.colorMode === 'bw';
-      const maxCode = mono ? B.WHITE : B.RED;
-      const planeCount = mono ? 1 : 2;
+      setDebug(true);
+      origParams = { ...state.params };
+      origMapping = state.activeLayer.mapping;
+      state.activeLayer.mapping = 'query';
+      const modeInfo = PANELS.modes[state.colorMode];
+      const maxCode = modeInfo.colors.length - 1;
+      const planeCount = hasAccent() ? 2 : 1;
+      const expectedBytes = Math.ceil(state.w * modeInfo.bits / 8) * state.h * planeCount;
       out.push('sample=' + state.activeLayer.name + ' canvas=' + state.w + 'x' + state.h + ' mode=' + state.colorMode);
       if (!state.codes || state.codes.length !== state.w * state.h) throw new Error('code buffer length');
-      if (!state.pack || state.pack.bytes !== Math.ceil(state.w / 8) * state.h * planeCount ||
-          Boolean(state.pack.plane1) !== !mono) throw new Error('pack size or plane count');
+      if (!state.pack || state.pack.bytes !== expectedBytes ||
+          Boolean(state.pack.plane1) !== hasAccent()) throw new Error('pack size or plane count');
       out.push('pack bytes=' + state.pack.bytes + ' crc0=0x' + hex4(state.pack.crc0) +
-        (mono ? '' : ' crc1=0x' + hex4(state.pack.crc1)));
+        (hasAccent() ? ' crc1=0x' + hex4(state.pack.crc1) : ''));
       out.push('coverage=' + state.metrics.coverage.map((v) => (v * 100).toFixed(1) + '%').join('/'));
 
       let combos = 0;
-      for (const mode of mono ? ['nearest'] : ['dominant', 'nearest', 'rule', 'duotone']) {
+      for (const mode of !hasAccent() ? ['nearest'] : ['dominant', 'nearest', 'rule', 'duotone']) {
         for (const dither of ['none', 'fs', 'atkinson', 'stucki', 'bayer4', 'bayer8']) {
           state.params.mode = mode;
           state.params.dither = dither;
@@ -2752,24 +2518,25 @@
 
       // 已知 CRC：全白 400×300 的 plane0 应为 11440
       const white = new Uint8Array(400 * 300).fill(B.WHITE);
-      const wp = B.pack(white, 400, 300, { colorMode: state.colorMode });
-      if (wp.bytes !== 15000 * planeCount || wp.crc0 !== 11440) throw new Error('white CRC ' + wp.crc0);
+      const wp = B.pack(white, 400, 300, { colorMode: 'bw' });
+      if (wp.bytes !== 15000 || wp.crc0 !== 11440) throw new Error('white CRC ' + wp.crc0);
       out.push('white pack crc0=' + wp.crc0 + ' (expected 11440)');
       if (runtimeErrors.length) throw new Error('runtime errors: ' + runtimeErrors.join(' | '));
 
-      state.pre = origPre;
+      state.activeLayer.mapping = origMapping;
       state.params = origParams;
       syncControls();
       reprocess();
       out.push('PASS');
-      document.title = 'BWR LAB · SELFTEST PASS';
+      document.title = 'Ink Studio · SELFTEST PASS';
       document.body.dataset.selftest = 'pass';
     } catch (e) {
       out.push('FAIL ' + (e && e.stack ? e.stack : e));
-      document.title = 'BWR LAB · SELFTEST FAIL';
+      document.title = 'Ink Studio · SELFTEST FAIL';
       document.body.dataset.selftest = 'fail';
-      if (origPre) {
-        state.pre = origPre; state.params = origParams;
+      if (origParams) {
+        state.activeLayer.mapping = origMapping;
+        state.params = origParams;
         syncControls(); reprocess();
       }
     }
@@ -2783,12 +2550,25 @@
   function init() {
     if (q.get('fresh') !== '1') loadSaved();
     const colorMode = q.get('colorMode');
-    if (colorMode === 'bw' || colorMode === 'bwr') state.colorMode = colorMode;
+    if (Object.hasOwn(PANELS.modes, colorMode)) state.colorMode = colorMode;
+    const select = $('panelSelect');
+    const generic = document.createElement('optgroup');
+    generic.label = '常用画布';
+    const arduino = document.createElement('optgroup');
+    arduino.label = 'Arduino 示例';
+    for (const panel of PANELS.panels) {
+      const colors = panel.modes.map(key => PANELS.modes[key].label).join(' / ');
+      const name = panel.name + ' · ' + panel.w + ' × ' + panel.h + ' · ' + colors;
+      (panel.id.startsWith('epd') ? arduino : generic).append(new Option(name, panel.id));
+    }
+    select.append(generic, arduino, new Option('自定义…', 'custom'));
     bindEvents();
     updateSmoothUI();
 
+    const model = panelById.get(q.get('panel'));
     const panel = (q.get('panel') || '').match(/^(\d+)x(\d+)$/);
-    if (panel) applyPanelSize(+panel[1], +panel[2], panel[0]);
+    if (model) applyPanelSize(model.w, model.h, model.id);
+    else if (panel) applyPanelSize(+panel[1], +panel[2], panel[0]);
     else if (q.has('w') && q.has('h')) applyPanelSize(+q.get('w'), +q.get('h'), 'custom');
     else applyPanelSize(state.w, state.h, state.panelId);
 
@@ -2805,8 +2585,7 @@
   window.__BWR_LAB__ = {
     state: state, B: B, reprocess: reprocess, rebuildSource: rebuildSource,
     loadSample: loadSample, applyPreset: applyPreset, fitView: fitView,
-    setView: setView, setSplit: setSplit, repack: repack, applyHistDrag: applyHistDrag,
-    autoThresholds: autoThresholds, drawHistogram: drawHistogram,
+    setView: setView, setSplit: setSplit, repack: repack, drawHistogram: drawHistogram,
     errors: runtimeErrors, finishPendingRender: finishPendingRender,
   };
 

@@ -1,4 +1,4 @@
-/* BWR Lab — Web Bluetooth direct transfer to the 7.5-inch TLSR8359 tag. */
+/* Ink Studio — Web Bluetooth image transfer. */
 (function () {
   'use strict';
 
@@ -7,8 +7,8 @@
   const SERVICE = '0000a000-0000-1000-8000-00805f9b34fb';
   const CMD = '0000a001-0000-1000-8000-00805f9b34fb';
   const RSP = '0000a002-0000-1000-8000-00805f9b34fb';
-  const PLANE_BYTES = 48000;
-  const TOTAL_BYTES = PLANE_BYTES * 2;
+  const LEGACY_PANEL = { w: 800, h: 480, mode: 'bwr' };
+  const WIRE_MODES = [null, 'bw', 'bwr', 'bwy', 'gray4', 'seven'];
   const WINDOW_BYTES = 4096;
   const waiters = new Set();
   let device = null;
@@ -17,7 +17,8 @@
   let connected = false;
   let busy = false;
   let transferPlane = 0;
-  let transferBlocked = false;
+  let panel = null;
+  let planeSize = 0;
   let latestAck = 0;
   let token = 0;
   let refreshInProgress = false;
@@ -37,15 +38,31 @@
   function setProgress(value) {
     const progress = $('bleProgress');
     progress.hidden = false;
-    progress.value = Math.max(0, Math.min(TOTAL_BYTES, value));
+    progress.value = value;
   }
 
   function canUseBluetooth() {
     return !!(window.isSecureContext && navigator.bluetooth);
   }
 
-  function hasCompatiblePanel() {
-    return lab.state.w === 800 && lab.state.h === 480 && lab.state.colorMode === 'bwr';
+  function panelMatches(spec, { w, h, colorMode }) {
+    return spec && spec.w === w && spec.h === h && spec.mode === colorMode;
+  }
+
+  function panelDescription(spec) {
+    return spec.w + ' × ' + spec.h + ' ' + window.INK_PANELS.modes[spec.mode].label;
+  }
+
+  function readPanel(packet) {
+    if (packet.length === 7) return LEGACY_PANEL;
+    if (packet.length !== 13 || packet[7] !== 1) throw new Error('设备报告了不支持的传图协议版本');
+    const w = packet[8] | (packet[9] << 8);
+    const h = packet[10] | (packet[11] << 8);
+    const mode = WIRE_MODES[packet[12]];
+    if (w < 8 || w > 1024 || h < 8 || h > 1024 || !mode) {
+      throw new Error('设备报告了不支持的画布规格');
+    }
+    return { w, h, mode };
   }
 
   function updateControls() {
@@ -54,8 +71,8 @@
     $('bleConnect').disabled = busy || connected || !canConnect;
     $('bleDisconnect').hidden = !connected;
     $('bleDisconnect').disabled = busy || !connected;
-    $('bleSend').disabled = busy || !connected || transferBlocked ||
-      !hasCompatiblePanel() || lab.state.codes?.length !== 800 * 480;
+    $('bleSend').disabled = busy || !connected || !!transferPlane ||
+      !panelMatches(panel, lab.state) || lab.state.codes?.length !== lab.state.w * lab.state.h;
     $('bleAbort').hidden = !connected || !transferPlane;
     $('bleAbort').disabled = busy || !connected || !transferPlane;
 
@@ -64,8 +81,10 @@
       hint = '蓝牙直连需要通过 HTTPS 或 localhost 打开。';
     } else if (!canConnect) {
       hint = '蓝牙直连可用桌面 Chrome / Edge 或 Android Chrome。';
-    } else if (!hasCompatiblePanel()) {
-      hint = '价签直传使用 7.5 寸（800 × 480）黑白红三色画布。';
+    } else if (connected && panel) {
+      hint = panelMatches(panel, lab.state)
+        ? '设备规格：' + panelDescription(panel)
+        : '请将画布切换为设备规格：' + panelDescription(panel);
     }
     $('bleSupport').textContent = hint;
     $('bleSupport').hidden = !hint;
@@ -126,7 +145,7 @@
     if (!packet.length) return;
     if (packet[0] === 0x91 && packet.length >= 5) {
       latestAck = u32le(packet, 1);
-      if (transferPlane) setStatus('平面 ' + transferPlane + '：价签已接收 ' + latestAck.toLocaleString() + ' / ' + PLANE_BYTES.toLocaleString() + ' B', '');
+      if (transferPlane) setStatus('平面 ' + transferPlane + '：价签已接收 ' + latestAck.toLocaleString() + ' / ' + planeSize.toLocaleString() + ' B', '');
     }
     for (const waiter of Array.from(waiters)) {
       try {
@@ -169,12 +188,17 @@
   }
 
   async function queryStatus() {
-    transferBlocked = true;
+    panel = null;
     updateControls();
-    const packet = await command([0x17], (p) => p[0] === 0x97 && p.length >= 7, 7000, '传图状态');
+    const packet = await command([0x17], (p) => p[0] === 0x97, 7000, '传图状态');
+    panel = readPanel(packet);
     const status = { active: packet[1], loaded: packet[2], got: u32le(packet, 3) };
+    const planeCount = panel.mode === 'bwr' || panel.mode === 'bwy' ? 2 : 1;
+    if (status.active > planeCount || status.loaded > planeCount) {
+      panel = null;
+      throw new Error('设备报告了无效的平面编号');
+    }
     transferPlane = status.active;
-    transferBlocked = !!status.active;
     updateControls();
     if (status.active) {
       setStatus('价签有未完成的平面 ' + status.active + '（已收 ' + status.got.toLocaleString() + ' B）。请先点“中止未完成传输”，再发送新图。', 'bad');
@@ -202,7 +226,7 @@
   }
 
   async function sendPlane(planeBytes, planeNumber, mtu, progressBase) {
-    if (planeBytes.length !== PLANE_BYTES) throw new Error('平面长度不是 48,000 B');
+    planeSize = planeBytes.length;
     const wantedCrc = crc32(planeBytes);
     const begin = [0x10, planeNumber, 0, 0, 0, 0, 0, 0, 0, 0];
     putU32le(begin, 2, planeBytes.length);
@@ -217,7 +241,7 @@
     let acked = 0;
     while (sent < planeBytes.length) {
       if (!connected) throw new Error('传输过程中 BLE 断开');
-      const windowRoom = Math.max(1, WINDOW_BYTES - (sent - acked));
+      const windowRoom = WINDOW_BYTES - (sent - acked);
       const count = Math.min(maxPayload, windowRoom, planeBytes.length - sent);
       const chunk = new Uint8Array(count + 1);
       chunk[0] = 0x11;
@@ -227,7 +251,8 @@
       sent += count;
       setProgress(progressBase + sent);
       if (sent - acked >= WINDOW_BYTES && sent < planeBytes.length) {
-        acked = await waitForAck(acked + WINDOW_BYTES, 15000);
+        acked = await waitForAck(sent, 15000);
+        if (acked !== sent) throw new Error('设备确认的字节数与已发送字节数不符');
       }
     }
 
@@ -255,7 +280,7 @@
     try {
       await command([0x14], (p) => p[0] === 0x94 && p.length >= 2 && p[1] === 0, 8000, '全刷接受通知');
       refreshAccepted = true;
-      setStatus('价签已接受全刷，正在驱动面板（通常约 26 秒）…', '');
+      setStatus('价签已接受全刷，等待刷新完成通知…', '');
       const done = await finished.promise;
       if (done.disconnected) return { accepted: true, disconnected: true };
       if (done[1] !== 1) throw new Error('价签报告面板刷新失败，状态 ' + done[1]);
@@ -275,40 +300,41 @@
   }
 
   async function sendImage() {
-    lab.finishPendingRender();
-    if (!lab.state.codes) throw new Error('请先添加图片或手写图层');
-    if (!hasCompatiblePanel()) throw new Error('请先选择 7.5 寸（800 × 480）黑白红三色画布');
-
-    const packed = lab.B.pack(lab.state.codes, lab.state.w, lab.state.h, {
-      encoding: 'driver', invertBW: false, invertRed: false,
-    });
-    if (packed.planeBytes !== PLANE_BYTES) throw new Error('转换结果不是 800×480 双平面');
     const status = await queryStatus();
     if (status.active) return;
+    lab.finishPendingRender();
+    const { codes, w, h, colorMode } = lab.state;
+    if (codes?.length !== w * h) throw new Error('请先添加图层');
+    if (!panelMatches(panel, { w, h, colorMode })) {
+      throw new Error('画布与设备规格不符：' + panelDescription(panel));
+    }
 
+    const packed = lab.B.pack(codes, w, h, { colorMode, encoding: 'driver' });
+    const planes = packed.plane1 ? [packed.plane0, packed.plane1] : [packed.plane0];
     const mtu = await queryMtu();
     const mtuPayload = Math.min(243, mtu - 4);
+    $('bleProgress').max = packed.bytes;
     setProgress(0);
     setStatus('开始传图：ATT MTU ' + mtu + '，每个 BLE 包最多 ' + mtuPayload + ' B 图像数据。', '');
-    await sendPlane(packed.plane0, 1, mtu, 0);
-    await sendPlane(packed.plane1, 2, mtu, PLANE_BYTES);
-    setProgress(TOTAL_BYTES);
+    for (const [index, bytes] of planes.entries()) {
+      await sendPlane(bytes, index + 1, mtu, index * packed.planeBytes);
+    }
     const refresh = await refreshPanel();
     if (refresh.disconnected) {
       const message = refresh.accepted
-        ? '两个平面已传完并通过 Flash CRC32 回读。价签已接受全刷，但刷新完成通知到达前 BLE 断开；屏幕结果未知，请查看屏幕确认。'
-        : '两个平面已传完并通过 Flash CRC32 回读。发送全刷请求期间 BLE 断开，页面无法确认价签是否接受或完成刷新；请查看屏幕确认。';
+        ? '图像已传完并通过 Flash CRC32 回读。价签已接受全刷，但刷新完成通知到达前 BLE 断开；屏幕结果未知，请查看屏幕确认。'
+        : '图像已传完并通过 Flash CRC32 回读。发送全刷请求期间 BLE 断开，页面无法确认价签是否接受或完成刷新；请查看屏幕确认。';
       setStatus(message, 'warn');
       return;
     }
     const refreshMs = (refresh.packet[4] << 8) | refresh.packet[5];
-    setStatus('传图、两个平面的 Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。', 'good');
+    setStatus('传图、Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。', 'good');
   }
 
   async function connect() {
     if (!canUseBluetooth()) throw new Error('请在 HTTPS 页面和支持 Web Bluetooth 的 Chrome / Edge 中打开');
     const link = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'ESL-' }],
+      filters: [{ namePrefix: 'ESL-' }, { services: [SERVICE] }],
       optionalServices: [SERVICE],
     });
     device = link;
@@ -343,7 +369,7 @@
     commandChar = null;
     responseChar = null;
     transferPlane = 0;
-    transferBlocked = false;
+    panel = null;
     $('bleLinkBadge').textContent = '未连接';
     $('bleLinkBadge').classList.remove('ble-connected');
     if (refreshInProgress) {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5f5f9">
-<title>BWR Studio · 墨水屏传图</title>
+<title>Ink Studio · 墨水屏传图</title>
 <link rel="stylesheet" href="bwr.css">
 </head>
 <body>
@@ -12,9 +12,9 @@
   <div class="nav-shell">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"><i class="k"></i><i class="w"></i><i class="r"></i></span>
-      <strong>BWR Studio</strong>
+      <strong>Ink Studio</strong>
     </div>
-    <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动调试</button>
+    <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
   </div>
 </header>
 <input id="fileInput" type="file" accept="image/*" hidden>
@@ -25,19 +25,10 @@
       <h1 id="pageTitle">墨水屏传图</h1>
       <div class="panel-controls">
         <label class="panel-pick">
-          <select id="panelSelect" aria-label="目标画布">
-            <option value="800x480" selected>7.5″ · 800 × 480</option>
-            <option value="400x300">4.2″ · 400 × 300</option>
-            <option value="296x128">2.9″ · 296 × 128</option>
-            <option value="128x296">2.9″ 竖 · 128 × 296</option>
-            <option value="custom">自定义…</option>
-          </select>
+          <select id="panelSelect" aria-label="目标面板"></select>
         </label>
         <label class="panel-pick">
-          <select id="colorMode" aria-label="屏幕色彩模式">
-            <option value="bw">双色 · 黑白</option>
-            <option value="bwr" selected>三色 · 黑白红</option>
-          </select>
+          <select id="colorMode" aria-label="屏幕色彩模式"></select>
         </label>
         <span class="size-custom" id="sizeCustom" hidden>
           <input id="customW" type="number" min="8" max="1024" step="1" value="800" aria-label="自定义宽度">
@@ -51,7 +42,7 @@
       <div class="stage-toolbar" id="debugToolbar" hidden>
         <div class="view-tabs" role="tablist" aria-label="预览内容">
           <button class="view-tab active" data-view="result" role="tab" aria-selected="true">合成</button>
-          <button class="view-tab" data-view="source" role="tab" aria-selected="false">预处理后</button>
+          <button class="view-tab" data-view="source" role="tab" aria-selected="false">原图</button>
           <button class="view-tab" data-view="bw" role="tab" aria-selected="false">BW 层</button>
           <button class="view-tab" data-view="red" data-bwr role="tab" aria-selected="false">RED 层</button>
         </div>
@@ -78,7 +69,7 @@
             <span class="empty-hint">也可拖放或粘贴图片</span>
           </button>
           <div class="drop-overlay" id="dropOverlay" hidden><div>松手载入图片</div></div>
-          <div class="split-tag left" id="splitTagL" hidden>预处理后</div>
+          <div class="split-tag left" id="splitTagL" hidden>原图</div>
           <div class="split-tag right" id="splitTagR" hidden>转换结果</div>
           <div class="split-handle" id="splitHandle" hidden><i></i></div>
         </div>
@@ -96,7 +87,19 @@
       </div>
 
       <div class="editor-bar">
-        <label class="editor-field">抖动
+        <div class="editor-options" id="layerConversion" hidden>
+          <label class="editor-field" id="presetField">预设
+            <select id="presetSelect">
+              <option value="">智能</option>
+              <option value="photo">照片</option>
+              <option value="icon">图标</option>
+              <option value="redtone">暖调</option>
+              <option value="poster">海报</option>
+              <option value="text">文字</option>
+              <option value="custom">微距</option>
+            </select>
+          </label>
+          <label class="editor-field">抖动
           <select id="quickDither">
             <option value="auto">自动</option>
             <option value="none">关闭</option>
@@ -106,10 +109,25 @@
             <option value="bayer4">Bayer 4×4</option>
             <option value="bayer8">Bayer 8×8</option>
           </select>
-        </label>
+          </label>
+          <label class="editor-field" id="mappingField"><span><span data-accent-name></span>映射</span>
+            <select id="layerMapping">
+              <option value="ink">图层原色</option>
+              <option value="auto">自动主色</option>
+              <option value="natural">保留原色</option>
+              <option value="R">R 通道</option>
+              <option value="G">G 通道</option>
+              <option value="B">B 通道</option>
+              <option value="color">指定源色</option>
+              <option value="mono">仅黑白</option>
+            </select>
+          </label>
+          <label class="editor-field" id="mapColorField" hidden>源色
+            <input id="mapColor" type="color" value="#0080ff">
+          </label>
+        </div>
         <div class="editor-actions" id="editorActions">
-          <button class="btn sm" id="transformBtn" type="button" aria-expanded="false" aria-controls="layerTransform" hidden>构图</button>
-          <label class="check editor-check"><input id="drawMode" type="checkbox" aria-controls="drawTools"> 手写</label>
+          <button class="btn sm" id="eraseBtn" type="button" aria-pressed="false" aria-controls="eraseTools" hidden>擦除</button>
           <details class="add-layer" id="addLayerMenu">
             <summary class="btn sm">＋ 图层</summary>
             <div class="add-menu">
@@ -123,14 +141,14 @@
       </div>
       <div class="editor-tray drawing-tools" id="drawTools" hidden>
         <label class="editor-field">笔色
-          <select id="brushColor">
-            <option value="0">黑</option>
-            <option value="1">白</option>
-            <option value="2" data-bwr>红</option>
-          </select>
+          <select id="brushColor"></select>
         </label>
         <label class="range-row brush-width">粗细 <input id="brushWidth" type="range" min="1" max="32" value="5"><output id="brushWidthOut">5 px</output></label>
         <button class="btn sm" id="undoStroke" type="button" disabled>撤销一笔</button>
+      </div>
+      <div class="editor-tray drawing-tools" id="eraseTools" hidden>
+        <label class="range-row brush-width">橡皮大小 <input id="eraseWidth" type="range" min="3" max="100" value="24"><output id="eraseWidthOut">24 px</output></label>
+        <button class="btn sm" id="undoErase" type="button" disabled>撤销擦除</button>
       </div>
       <div class="editor-tray text-tools" id="textTools" hidden>
         <label class="editor-field">文字
@@ -141,38 +159,21 @@
             <input id="textSize" type="number" min="4" max="512" step="1" inputmode="numeric">
           </label>
           <label class="editor-field">墨色
-            <select id="textColor">
-              <option value="0">黑</option>
-              <option value="1">白</option>
-              <option value="2" data-bwr>红</option>
-            </select>
+            <select id="textColor"></select>
           </label>
         </div>
       </div>
-      <section class="editor-tray transform-tray" id="layerTransform" aria-label="图层构图" hidden>
-        <div class="block-head">
-          <h2 id="transformName">构图</h2>
-          <button class="link" id="resetView" type="button">复位构图</button>
-        </div>
-        <div class="transform-fields">
-          <label class="field" id="fitField">适配
-            <select id="fitSelect">
-              <option value="cover">铺满（裁切）</option>
-              <option value="contain">完整放入</option>
-            </select>
-          </label>
-          <label class="range-row">缩放 <input id="imgZoom" type="range" min="10" max="400" step="1" value="100"><output id="imgZoomOut">100%</output></label>
-          <label class="field">旋转
-            <span class="angle-row">
-              <button class="mini" id="rotL" type="button" aria-label="逆时针 90°">↶</button>
-              <input id="angle" type="range" min="-180" max="180" step="1" value="0" aria-label="旋转角度">
-              <button class="mini" id="rotR" type="button" aria-label="顺时针 90°">↷</button>
-              <output id="angleOut">0°</output>
-            </span>
-          </label>
-        </div>
-        <p id="editHint" class="hint"></p>
-      </section>
+      <div class="editor-tray transform-tray" id="layerTransform" role="group" aria-label="图层变换" hidden>
+        <label class="range-row">旋转 <input id="angle" type="range" min="-180" max="180" step="1" value="0"><output id="angleOut">0°</output></label>
+        <label class="range-row">缩放 <input id="imgZoom" type="range" min="10" max="400" step="1" value="100"><output id="imgZoomOut">100%</output></label>
+        <label class="editor-field" id="fitField">适配
+          <select id="fitSelect">
+            <option value="cover">铺满</option>
+            <option value="contain">完整</option>
+          </select>
+        </label>
+        <button class="link" id="resetView" type="button">复位</button>
+      </div>
 
       <div class="stage-status" id="debugStatus" hidden>
         <span class="mono" id="statusLeft">—</span>
@@ -233,141 +234,14 @@
       <button class="link paste-link" id="pasteBtn" type="button">从剪贴板粘贴</button>
     </section>
 
-    <section class="block">
-      <div class="block-head">
-        <h2>预处理</h2>
-        <button class="link" id="preReset" type="button">归零</button>
-      </div>
-      <label class="range-row">亮度 <input id="bri" type="range" min="-100" max="100" step="1" value="0"><output id="briOut">0</output></label>
-      <label class="range-row">对比度 <input id="con" type="range" min="-100" max="100" step="1" value="0"><output id="conOut">0</output></label>
-      <label class="range-row">伽马 <input id="gamma" type="range" min="40" max="250" step="1" value="100"><output id="gammaOut">1.00</output></label>
-      <label class="range-row">饱和度 <input id="sat" type="range" min="0" max="200" step="1" value="100"><output id="satOut">100%</output></label>
-      <label class="range-row" data-bwr>红色增强 <input id="redBoost" type="range" min="0" max="200" step="1" value="0"><output id="redBoostOut">0%</output></label>
-      <label class="range-row">锐化 <input id="sharp" type="range" min="0" max="150" step="1" value="30"><output id="sharpOut">30%</output></label>
-      <label class="range-row">暗部裁切 <input id="blackClip" type="range" min="0" max="80" step="1" value="10"><output id="blackClipOut">10</output></label>
-      <label class="range-row">白场裁切 <input id="whiteClip" type="range" min="200" max="255" step="1" value="236"><output id="whiteClipOut">236</output></label>
-      <label class="check"><input id="preInvert" type="checkbox"> 反色（负片）</label>
-      <p class="hint">饱和度 / 红色增强在 OKLab 里做：只动彩度，不改变明暗。锐化只作用于亮度，避免彩边。白场裁切把纸白附近直接归白，避免整张浅色背景被网点弄脏。</p>
-    </section>
-
-    <section class="block">
-      <div class="block-head">
-        <h2>墨色</h2>
-        <button class="link" id="palReset" type="button">默认</button>
-      </div>
-      <div class="palette-row">
-        <input id="palK" type="color" value="#000000" aria-label="黑色">
-        <span class="pal-name">黑 K</span>
-        <input id="palKHex" class="hex" type="text" maxlength="7" value="#000000" spellcheck="false">
-      </div>
-      <div class="palette-row">
-        <input id="palW" type="color" value="#ffffff" aria-label="白色">
-        <span class="pal-name">白 W</span>
-        <input id="palWHex" class="hex" type="text" maxlength="7" value="#ffffff" spellcheck="false">
-      </div>
-      <div class="palette-row" data-bwr>
-        <input id="palR" type="color" value="#c80000" aria-label="红色">
-        <span class="pal-name">红 R</span>
-        <input id="palRHex" class="hex" type="text" maxlength="7" value="#c80000" spellcheck="false">
-      </div>
-      <p class="hint" data-bwr>红墨请按屏幕实测值填（例如 <code>#c80000</code>），不要直接用 sRGB 纯红。这个颜色同时用于距离判断和预览。</p>
-    </section>
-
-    <section class="block" data-bwr>
-      <div class="block-head">
-        <h2>判定方式</h2>
-      </div>
-      <div class="mode-grid" id="modeGrid">
-        <label class="mode-card">
-          <input type="radio" name="mode" value="dominant">
-          <strong>主色转红</strong>
-          <small>占比最高的 RGB 通道</small>
-        </label>
-        <label class="mode-card">
-          <input type="radio" name="mode" value="nearest" checked>
-          <strong>最近色</strong>
-          <small>最近两色混合<br>图标 · 照片</small>
-        </label>
-        <label class="mode-card">
-          <input type="radio" name="mode" value="rule">
-          <strong>规则映射</strong>
-          <small>亮度 + 红度<br>优先保红</small>
-        </label>
-        <label class="mode-card">
-          <input type="radio" name="mode" value="duotone">
-          <strong>红当灰</strong>
-          <small>红作中间调<br>海报 · 人像</small>
-        </label>
-      </div>
-
-      <div id="nearestOpts">
-        <label class="field">距离空间
-          <select id="space">
-            <option value="oklab">OKLab（感知均匀，推荐）</option>
-            <option value="rgb">RGB 欧氏距离（经典方案）</option>
-          </select>
-        </label>
-        <label class="range-row">红墨倾向 <input id="redBias" type="range" min="-100" max="100" step="1" value="0"><output id="redBiasOut">0</output></label>
-        <label class="check"><input id="warmOnly" type="checkbox" checked> 红墨只用于明显暖色（避免肤色 / 纸白出红点）</label>
-        <label class="range-row" id="warmGateRow">红墨门槛 <input id="warmGate" type="range" min="0" max="120" step="1" value="60"><output id="warmGateOut">60</output></label>
-        <p class="hint">红度 = <code>r − max(g,b)</code>。肤色大多在 30–60，纯红 / 红围巾 / 红标通常 &gt;100；想要夕阳多些红可降到 30–45，人像 / 图标建议 55–80。</p>
-      </div>
-
-      <div id="ruleOpts" hidden>
-        <label class="range-row">暗阈值 <input id="dark" type="range" min="1" max="254" step="1" value="64"><output id="darkOut">64</output></label>
-        <label class="range-row">亮阈值 <input id="light" type="range" min="2" max="255" step="1" value="192"><output id="lightOut">192</output></label>
-        <label class="range-row">红度门槛 <input id="redScore" type="range" min="0" max="255" step="1" value="42"><output id="redScoreOut">42</output></label>
-        <label class="range-row">过渡柔化 <input id="redSoft" type="range" min="0" max="60" step="1" value="12"><output id="redSoftOut">12</output></label>
-        <label class="check"><input id="redFirst" type="checkbox" checked> 红优先：暗红也保留（不勾选则只在中间调出红）</label>
-        <div class="hist-wrap">
-          <canvas id="hist" height="76" aria-label="亮度 / 红度直方图"></canvas>
-          <div class="hist-legend"><span class="lg-k">亮度</span><span class="lg-r">红度 r-max(g,b)</span><span class="lg-tip">拖动竖线调阈值</span></div>
-        </div>
-        <div class="btn-row">
-          <button class="btn sm ghost" id="autoThresh" type="button">按直方图取阈值</button>
-          <button class="btn sm ghost" id="ruleReset" type="button">恢复默认</button>
-        </div>
-        <p class="hint"><code>gray = 0.299r + 0.587g + 0.114b</code>，<code>red = r − max(g,b)</code>。开着抖动时，阈值会变成「红墨密度 / 黑墨密度」两团连续值，各自做一维误差扩散——红和黑白不抢误差。</p>
-      </div>
-
-      <div id="duotoneOpts" hidden>
-        <label class="range-row">红墨亮度 <input id="toneRed" type="range" min="16" max="220" step="1" value="130"><output id="toneRedOut">130</output></label>
-        <p class="hint">把红墨当成一个中间灰阶：暗部→黑，中间调→红点，亮部→白。只有明暗参与，不再看源图是不是红的，适合人像和旧海报。</p>
-      </div>
-    </section>
-
-    <section class="block">
-      <div class="block-head">
-        <h2>抖动</h2>
-        <span class="badge" id="ditherBadge">误差扩散</span>
-      </div>
-      <label class="field">算法
-        <select id="dither">
-          <option value="fs">Floyd–Steinberg（推荐）</option>
-          <option value="atkinson">Atkinson（高对比、少脏点）</option>
-          <option value="stucki">Stucki（更细，稍慢）</option>
-          <option value="bayer4">Bayer 4×4（有序网点）</option>
-          <option value="bayer8">Bayer 8×8（细网点）</option>
-          <option value="none">关闭（硬阈值）</option>
-        </select>
-      </label>
-      <label class="range-row" id="strengthRow">强度 <input id="strength" type="range" min="0" max="100" step="1" value="100"><output id="strengthOut">100%</output></label>
-      <label class="check" id="serpRow"><input id="serpentine" type="checkbox" checked> 蛇形扫描（减轻斜向纹理）</label>
-      <p class="hint" id="ditherHint">Floyd–Steinberg 将灰阶过渡分散为网点，适合照片。</p>
-    </section>
-
-    <section class="block">
-      <div class="block-head">
-        <h2>预设</h2>
-        <button class="link" id="resetAll" type="button">全部复位</button>
-      </div>
-      <div class="preset-grid">
-        <button class="preset" data-preset="photo" type="button"><b>照片</b><small>FS 抖动</small></button>
-        <button class="preset" data-preset="icon" type="button"><b>图标</b><small>硬阈值</small></button>
-        <button class="preset" data-preset="redtone" data-bwr type="button"><b>红调</b><small>红当灰</small></button>
-        <button class="preset" data-preset="poster" type="button"><b>海报</b><small>Bayer 网点</small></button>
-        <button class="preset" data-preset="text" type="button"><b>文字</b><small>高对比</small></button>
-        <button class="preset" data-preset="custom" type="button"><b>微距</b><small>Atkinson</small></button>
+    <section class="block" id="imageAdjustments" hidden>
+      <h2>当前图片图层</h2>
+      <label class="range-row">亮度 <input id="bri" type="range" min="-100" max="100" value="0"><output id="briOut">0</output></label>
+      <label class="range-row">对比度 <input id="con" type="range" min="-100" max="100" value="0"><output id="conOut">0</output></label>
+      <label class="range-row">阈值 <input id="threshold" type="range" min="1" max="254" value="128"><output id="thresholdOut">128</output></label>
+      <div class="hist-wrap">
+        <canvas id="hist" height="84" aria-label="RGB 与亮度直方图"></canvas>
+        <div class="hist-legend"><span>RGB / 亮度</span><span class="lg-tip">拖动黄色阈值线</span></div>
       </div>
     </section>
   </aside>
@@ -380,12 +254,8 @@
         <span class="badge" id="renderTime">—</span>
       </div>
       <div class="coverage">
-        <div class="cov-bar" id="covBar"><i class="k"></i><i class="w"></i><i class="r"></i></div>
-        <div class="cov-labels">
-          <span><b id="covK">0%</b> 黑</span>
-          <span><b id="covW">0%</b> 白</span>
-          <span data-bwr><b id="covR">0%</b> 红</span>
-        </div>
+        <div class="cov-bar" id="covBar"></div>
+        <div class="cov-labels" id="covLabels"></div>
       </div>
       <div class="metrics">
         <div><span>视觉误差 ΔE</span><b id="mDE">—</b><small>5×5 模糊后 OKLab</small></div>
@@ -395,7 +265,7 @@
         <div data-bwr><span>源图强红</span><b id="mSrcRed">—</b><small>r−max(g,b) ≥ 60</small></div>
         <div><span>点阵</span><b id="mPixels">—</b><small id="mBytes">—</small></div>
       </div>
-      <p class="hint" id="metricHint">先把“视觉误差”压低，再看红连通块：照片的网点会天然产生很多小红块，图标则应是一整块。</p>
+
     </section>
 
     <section class="block">
@@ -415,8 +285,8 @@
         </button>
       </div>
       <div class="rows">
-        <div class="row"><span>BW 平面</span><b class="mono" id="bwInfo">—</b></div>
-        <div class="row" data-bwr><span>RED 平面</span><b class="mono" id="redInfo">—</b></div>
+        <div class="row"><span id="plane0Label">BW 平面</span><b class="mono" id="bwInfo">—</b></div>
+        <div class="row" data-bwr><span data-accent-plane>彩墨平面</span><b class="mono" id="redInfo">—</b></div>
         <div class="row"><span>整幅</span><b class="mono" id="allInfo">—</b></div>
       </div>
       <p class="hint" data-bwr>预览里的 BW 层按“红点也置白”画；导出 BIN 默认用网关格式（红点 BW=0、RED=1），可在导出区切换。</p>
@@ -461,7 +331,7 @@
       <div class="export-grid">
         <button class="btn" id="expPng" type="button">合成 PNG</button>
         <button class="btn" id="expBW" type="button">BW PNG</button>
-        <button class="btn" id="expRED" data-bwr type="button">RED PNG</button>
+        <button class="btn" id="expRED" data-bwr type="button">彩墨 PNG</button>
         <button class="btn" id="expBin" type="button">双平面 BIN</button>
         <button class="btn ghost" id="expBWBin" data-bwr type="button">BW BIN</button>
         <button class="btn ghost" id="expRedBin" data-bwr type="button">RED BIN</button>
@@ -483,8 +353,9 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <pre id="selftest" hidden></pre>
-<noscript><div class="noscript">这个调试台需要 JavaScript。</div></noscript>
+<noscript><div class="noscript">Ink Studio 需要 JavaScript。</div></noscript>
 <script src="core.js"></script>
+<script src="panels.js"></script>
 <script src="app.js"></script>
 <script src="ble-transfer.js"></script>
 </body>

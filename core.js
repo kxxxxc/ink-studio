@@ -157,7 +157,7 @@
       const s = i * 4;
       let r = rgba[s], g = rgba[s + 1], b = rgba[s + 2];
       const a = rgba[s + 3] / 255;
-      if (a < 1) {
+      if (a < 1 && !o.preserveAlpha) {
         r = r * a + 255 * (1 - a);
         g = g * a + 255 * (1 - a);
         b = b * a + 255 * (1 - a);
@@ -236,7 +236,7 @@
     const counts = [0, 0, 0];
     let neutral = 0, pixels = 0;
     for (let i = 0; i < rgba.length; i += 4) {
-      if (inkMask && inkMask[i + 3] >= 128) continue;
+      if (rgba[i + 3] < 128 || (inkMask && inkMask[i + 3] >= 128)) continue;
       pixels++;
       const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
       const max = Math.max(r, g, b);
@@ -441,7 +441,7 @@
     const pal = palette.lab;
     let ai = -1, bi = -1, da = Infinity, db = Infinity;
     const bias = redBiasCost(p);
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < pal.length; k++) {
       if (k === RED && p.warmOnly && !warm) continue;
       const q = pal[k];
       const dl = L - q[0], dA = a - q[1], dB = b - q[2];
@@ -459,7 +459,7 @@
     const pal = palette.rgb;
     let ai = -1, bi = -1, da = Infinity, db = Infinity;
     const bias = (p.redBias / 100) * 1600;
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < pal.length; k++) {
       if (k === RED && p.warmOnly && !warm) continue;
       const q = pal[k];
       const dr = r - q[0], dg = g - q[1], dbb = b - q[2];
@@ -717,15 +717,27 @@
     return codes;
   }
 
-  function dominant(w, h, rgb, source, channel, p) {
-    if (channel == null || !source) return monochrome(w, h, rgb, p);
+  function dominant(w, h, rgb, source, channel, p, accentColor) {
+    if ((channel == null && !accentColor) || !source) return monochrome(w, h, rgb, p);
     const lum = new Float32Array(w * h);
     const score = new Float32Array(w * h);
+    const hue = accentColor && [accentColor[0] - accentColor[1],
+      accentColor[1] - accentColor[2], accentColor[2] - accentColor[0]];
+    const hueLength = hue ? Math.hypot(...hue) : 0;
     for (let i = 0, j = 0, k = 0; i < lum.length; i++, j += 3, k += 4) {
       lum[i] = 0.299 * rgb[j] + 0.587 * rgb[j + 1] + 0.114 * rgb[j + 2];
       const r = source[k], g = source[k + 1], b = source[k + 2];
       const max = Math.max(r, g, b);
-      if (source[k + channel] === max) score[i] = max - Math.min(r, g, b);
+      const chroma = max - Math.min(r, g, b);
+      if (!chroma) continue;
+      if (hue) {
+        if (!hueLength) continue;
+        const x = r - g, y = g - b, z = b - r;
+        const match = (x * hue[0] + y * hue[1] + z * hue[2]) / (Math.hypot(x, y, z) * hueLength);
+        score[i] = chroma * clamp((match - 0.8) / 0.2, 0, 1);
+      } else if (source[k + channel] === max) {
+        score[i] = chroma;
+      }
     }
     // 低彩度保留灰阶。鲜艳的主色直接落红墨，过渡色按彩度产生红点。
     return rule(w, h, lum, score, { ...p, redScore: 40, redSoft: 20, redFirst: true });
@@ -737,13 +749,21 @@
    * @returns {Uint8Array} 每像素 code：0 黑 / 1 白 / 2 红
    */
   function quantize(opts) {
-    const w = opts.w | 0, h = opts.h | 0, rgb = opts.rgb;
+    const w = opts.w | 0, h = opts.h | 0;
+    let rgb = opts.rgb;
     const n = w * h;
     if (!rgb || rgb.length < n * 3) throw new Error('quantize: RGB buffer too small');
     const palette = opts.palette || makePalette();
     const p = normalizeParams(opts.params);
-    if (opts.colorMode === 'bw') return monochrome(w, h, rgb, p);
-    if (p.mode === 'dominant') return dominant(w, h, rgb, opts.sourceRGBA, opts.accentChannel, p);
+    const threshold = clamp(finite(p.threshold, 128), 1, 254);
+    if (threshold !== 128) {
+      rgb = rgb.map((v) => v < threshold ? v * 128 / threshold
+        : 128 + (v - threshold) * 127 / (255 - threshold));
+    }
+    const extended = opts.colorMode === 'gray4' || opts.colorMode === 'seven';
+    if (extended) Object.assign(p, { mode: 'nearest', warmOnly: false, redBias: 0 });
+    if (opts.colorMode === 'bw' || opts.params?.mode === 'mono') return monochrome(w, h, rgb, p);
+    if (p.mode === 'dominant') return dominant(w, h, rgb, opts.sourceRGBA, opts.accentChannel, p, opts.accentColor);
     if (p.mode === 'duotone') {
       const lum = new Float32Array(n);
       for (let i = 0; i < n; i++) {
@@ -777,7 +797,7 @@
 
   function analyze(codes, rgb, w, h, palette) {
     const n = w * h;
-    const count = [0, 0, 0];
+    const count = new Array(Math.max(3, palette.rgb.length)).fill(0);
     let transitions = 0, pairs = 0, isolated = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -866,7 +886,7 @@
 
     return {
       count: count,
-      coverage: [count[0] / n, count[1] / n, count[2] / n],
+      coverage: count.map(value => value / n),
       transitions: pairs ? transitions / pairs : 0,
       isolatedRed: isolated,
       redComponents: redComponents,
@@ -893,15 +913,23 @@
    */
   function pack(codes, w, h, opt) {
     const o = Object.assign({ encoding: 'gateway', invertBW: false, invertRed: false }, opt || {});
-    const stride = (w + 7) >> 3;
+    const bits = o.colorMode === 'gray4' ? 2 : o.colorMode === 'seven' ? 4 : 1;
+    const stride = Math.ceil(w * bits / 8);
     const planeBytes = stride * h;
     const plane0 = new Uint8Array(planeBytes);
-    const plane1 = o.colorMode === 'bw' ? null : new Uint8Array(planeBytes);
+    const plane1 = bits === 1 && o.colorMode !== 'bw' ? new Uint8Array(planeBytes) : null;
+    const nativeCodes = bits === 2 ? [0, 3, 1, 2] : null;
     const driver = plane1 && o.encoding === 'driver';
     for (let y = 0; y < h; y++) {
       const row = y * stride;
       for (let x = 0; x < w; x++) {
         const c = codes[y * w + x];
+        if (bits > 1) {
+          const wire = nativeCodes ? nativeCodes[c] : c;
+          const bit = x * bits;
+          plane0[row + (bit >> 3)] |= wire << (8 - bits - (bit & 7));
+          continue;
+        }
         const idx = row + (x >> 3), bit = 0x80 >> (x & 7);
         const white = driver ? (c !== BLACK) : (c === WHITE);
         if (white) plane0[idx] |= bit;
