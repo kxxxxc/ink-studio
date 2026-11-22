@@ -151,7 +151,7 @@
   }
 
   async function inputTask(action, output) {
-    if (loading || link.busy) return;
+    if (loading || (link && link.busy)) return;
     loading = true;
     updateControls();
     try { await action(); }
@@ -290,8 +290,34 @@
       }
     }
     if (!quotes.size) throw new Error('一言接口没有返回可用的内容');
-    $('cardQuoteRows').value = [...quotes].map(([body, source]) => `${body} | ${source}`).join('\n');
-    $('cardQuoteStatus').textContent = `已从一言接口取到 ${quotes.size} 条。`;
+
+    /* 追加到列表末尾，不覆盖已经写好的内容（用户 2026-11-22：「取 7 条一言的时候 append 到最后，
+     * 不要删除现有内容」）。同一条正文已经在了就跳过，免得同一句话进包两次。 */
+    const existing = quoteRows();
+    const have = new Set(existing.map(([body]) => body));
+    const sizeOf = (body, source) => 2 + encoder.encode(body + source).length;
+    let size = 6 + existing.reduce((n, [body, source]) => n + sizeOf(body, source), 0);
+    const appended = [];
+    let full = '';
+    for (const [body, source] of quotes) {
+      if (have.has(body)) continue;
+      if (existing.length + appended.length >= 255) { full = '255 条已经是上限'; break; }
+      const grow = sizeOf(body, source);
+      if (size + grow > 16384) { full = '16 KB 已经装满'; break; }
+      size += grow;
+      appended.push([body, source]);
+    }
+    if (!appended.length) {
+      $('cardQuoteStatus').textContent = full
+        ? `一条也没追加：${full}。`
+        : '取到的几条都已经在列表里了，没有追加。';
+      updateForm();
+      return;
+    }
+    const merged = existing.concat(appended);
+    $('cardQuoteRows').value = merged.map(([body, source]) => (source ? `${body} | ${source}` : body)).join('\n');
+    $('cardQuoteStatus').textContent = `追加了 ${appended.length} 条，现在共 ${merged.length} 条`
+      + `（${(size / 1024).toFixed(1)} KB / 16 KB）` + (full ? `；${full}，其余已跳过` : '') + '。';
     updateForm();
     persist();
   }
@@ -457,10 +483,13 @@
     persist();
   });
   for (const id of settingsIds) {
-    $(id).addEventListener('input', () => {
+    const onEdit = () => {
       if (['cardLat', 'cardLon', 'cardCity'].includes(id)) locationChanged();
       else { updateForm(); persist(); }
-    });
+    };
+    /* select 在部分浏览器/辅助技术上只发 change 不发 input，所以两个都听。 */
+    $(id).addEventListener('input', onEdit);
+    $(id).addEventListener('change', onEdit);
   }
   restore();
   locationChanged();

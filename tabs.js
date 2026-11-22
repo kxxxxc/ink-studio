@@ -1,12 +1,13 @@
-/* Ink Studio — top-level tabs: 传图工具 / 模式卡片 / OTA 工具. */
+/* Ink Studio — top-level tabs: 传图工具 / 模式卡片 / 字模 / OTA 工具. */
 (function () {
   'use strict';
 
-  const TABS = ['image', 'cards', 'ota'];
+  const TABS = ['image', 'cards', 'fonts', 'ota'];
   const buttons = Array.from(document.querySelectorAll('.app-tab'));
   const pages = {
     image: document.getElementById('app'),
     cards: document.getElementById('pageCards'),
+    fonts: document.getElementById('pageFonts'),
     ota: document.getElementById('pageOta'),
   };
   const debugButton = document.getElementById('debugBtn');

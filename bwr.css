@@ -255,6 +255,8 @@ input[type="checkbox"] {
   font-weight: 600;
 }
 .size-custom input { width: 60px; }
+.orient-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; }
+.orient-btn svg { flex: none; }
 .debug-head {
   display: flex;
   align-items: center;
@@ -614,15 +616,14 @@ input[type="checkbox"] {
 .editor-field select { max-width: 156px; }
 #panelSelect { max-width: min(350px, calc(100vw - 32px)); }
 .editor-field input[type="color"] { width: 32px; height: 30px; padding: 2px; }
-.transform-tray {
+/* 旋转与预设/抖动同一行；缩放改用滚轮或双指手势，不再占一行滑块 */
+.editor-options .angle-control {
   display: grid;
-  grid-template-columns: repeat(2, minmax(110px, 1fr)) auto auto;
-  align-items: center;
-  gap: 10px;
-}
-.transform-tray .range-row { grid-template-columns: auto minmax(38px, 1fr) 40px; }
-@media (max-width: 720px) {
-  .transform-tray { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  grid-template-columns: auto minmax(72px, 132px) 40px;
+  gap: 7px;
+  margin: 0;
+  flex: 0 1 224px;
+  min-width: 152px;
 }
 .editor-check {
   min-height: 32px; padding: 0 9px;
@@ -656,7 +657,7 @@ input[type="checkbox"] {
 }
 .text-tools input[type="number"] { width: 76px; font-size: 16px; }
 .stage-area .layer-panel { margin: 0; min-width: 0; }
-.layer-panel .block-head, .transform-tray .block-head { flex-wrap: wrap; }
+.layer-panel .block-head { flex-wrap: wrap; }
 .layer-actions { gap: 4px; }
 .layer-actions .btn { padding-inline: 6px; }
 .layer-list {
@@ -676,6 +677,17 @@ input[type="checkbox"] {
 .layer-select[aria-pressed="true"] { color: var(--accent-hover); background: var(--accent-soft); border-color: #c9dbfa; }
 .layer-select span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-kind { margin-left: auto; white-space: nowrap; color: var(--dim); font-size: 11px; }
+.layer-item { display: flex; align-items: center; gap: 4px; }
+.layer-select { flex: 1 1 auto; width: auto; }
+.layer-eye {
+  flex: 0 0 30px; width: 30px; min-height: 32px; padding: 0;
+  display: grid; place-items: center;
+  color: var(--muted); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.layer-eye svg { width: 15px; height: 15px; fill: currentColor; }
+.layer-eye[aria-pressed="false"] { color: var(--dim); opacity: .55; }
+.layer-eye:hover { border-color: var(--accent); color: var(--accent); opacity: 1; }
 .transform-fields {
   display: grid; grid-template-columns: 1fr 1.5fr 1.5fr;
   align-items: end; gap: 10px;
@@ -924,6 +936,9 @@ input[type="checkbox"] {
   text-transform: uppercase;
 }
 .ota-help { margin-top: 16px; }
+/* 字模的预览占满两列：格子要画得大才看得出像素 */
+.ota-grid > .ota-wide { grid-column: 1 / -1; }
+.ota-grid + .ota-grid { margin-top: 16px; }
 .ota-kv { display: grid; gap: 6px; font-size: 13px; }
 .ota-kv > div {
   display: grid;
@@ -970,6 +985,49 @@ input[type="checkbox"] {
 #otaProgress { width: 100%; height: 8px; accent-color: var(--accent); }
 #otaLinkBadge.ble-connected { color: #096747; background: #e9f7ef; }
 
+/* --------------------------------------------------------------- 字模 tab */
+#pageFonts .ota-panel label:not(.range-row):not(.check):not(.ota-file) {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+#pageFonts .ota-file { font-size: 13px; }
+#pageFonts select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 14px;
+}
+.font-preview-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 2px 0 8px;
+}
+.font-preview-tools .range-row { flex: 1 1 200px; margin: 0; }
+.font-preview-tools .range-row output { min-width: 26px; }
+.font-preview {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: #fff;
+  image-rendering: pixelated;
+}
+#fontBuildProgress, #fontProgress { width: 100%; height: 8px; accent-color: var(--accent); }
+#fontLinkBadge.ble-connected { color: #096747; background: #e9f7ef; }
+
+/* --------------------------------------------------------------- 卡片弹窗 */
 .card-dialog {
   width: min(560px, calc(100% - 24px));
   max-height: calc(100dvh - 24px);
@@ -1040,6 +1098,12 @@ input[type="checkbox"] {
   .page-card { padding: 24px 14px 30px; }
   .page-head h1 { font-size: 25px; }
   .ota-grid { grid-template-columns: minmax(0, 1fr); }
+  .panel-controls { width: 100%; }
+  .panel-pick { flex: 1 1 160px; }
+  .panel-pick select { width: 100%; }
+  .editor-bar { align-items: flex-start; }
+  .editor-options { width: 100%; }
+  .block-head { flex-wrap: wrap; }
 }
 @media (max-width: 600px) {
   .nav-shell { min-height: 58px; padding-inline: 16px; }
@@ -1059,8 +1123,16 @@ input[type="checkbox"] {
   .ble-block { gap: 12px; padding: 14px; }
   .ble-actions .btn, .image-actions .btn { min-height: 42px; }
   .stage-tools { margin-left: 0; }
+  .stage-toolbar { gap: 6px; }
+  .view-tab { padding: 6px 8px; }
+  .zoom-tools { flex-wrap: wrap; justify-content: center; }
   .editor-bar { row-gap: 6px; }
   .editor-tray { margin-inline: 0; }
+  .editor-options { gap: 7px 6px; }
+  .editor-options .editor-field { flex: 1 1 132px; }
+  .editor-options .editor-field select { max-width: none; }
+  .editor-options .angle-control { flex: 1 1 100%; grid-template-columns: auto minmax(0, 1fr) 40px; }
+  .orient-btn { padding-inline: 8px; }
   .transform-fields { grid-template-columns: minmax(0, 1fr); }
   .transform-fields .angle-row { max-width: 240px; }
 }

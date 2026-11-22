@@ -33,10 +33,26 @@
     dark: 64, light: 192, redScore: 42, redFirst: true, redSoft: 12, toneRed: 130,
   };
   const DEFAULT_TRANSFORM = { x: 0, y: 0, zoom: 100, angle: 0 };
+  const ZOOM_MIN = 10, ZOOM_MAX = 400;   // 滚轮/双指缩放范围（滑块已取消）
   const LAYER_KINDS = { image: '图片', ink: '手写', text: '文字' };
+  /* 文字图层字体：id 存进图层，stack 是真正用到的 CSS font-family（跨平台按顺序回退）。 */
+  const TEXT_FONTS = [
+    { id: '', label: '系统默认', stack: 'system-ui, "PingFang SC", "Microsoft YaHei", sans-serif' },
+    { id: 'song', label: '宋体', stack: '"SimSun", "Songti SC", "STSong", serif' },
+    { id: 'hei', label: '黑体', stack: '"SimHei", "Heiti SC", "STHeiti", sans-serif' },
+    { id: 'yahei', label: '微软雅黑', stack: '"Microsoft YaHei", "Microsoft YaHei UI", sans-serif' },
+    { id: 'kai', label: '楷体', stack: '"KaiTi", "STKaiti", "Kaiti SC", serif' },
+    { id: 'fang', label: '仿宋', stack: '"FangSong", "STFangsong", serif' },
+    { id: 'deng', label: '等线', stack: '"DengXian", sans-serif' },
+    { id: 'noto-sans', label: '思源黑体', stack: '"Noto Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif' },
+    { id: 'noto-serif', label: '思源宋体', stack: '"Noto Serif SC", "Source Han Serif SC", serif' },
+    { id: 'mono', label: '等宽', stack: 'ui-monospace, Consolas, "Courier New", monospace' },
+  ];
+  const fontStackOf = (id) => (TEXT_FONTS.find((f) => f.id === id) || TEXT_FONTS[0]).stack;
   const RGB_CHANNELS = ['R', 'G', 'B'];
   const PANELS = window.INK_PANELS;
   const panelById = new Map(PANELS.panels.map(panel => [panel.id, panel]));
+  const choiceById = PANELS.choiceById;   // 合并后的屏幕选项；旧型号 id 也能查到归属项
   const EMPTY_PRE = { ...PRE_DEFAULTS };
   const EMPTY_PARAMS = { ...PARAM_DEFAULTS, dither: 'none', threshold: 128 };
   const hasAccent = () => state.colorMode === 'bwr' || state.colorMode === 'bwy';
@@ -51,6 +67,7 @@
   const state = {
     panelId: '800x480',
     w: 800, h: 480,
+    portrait: false,   // 编辑方向：false=横版（默认）；true=竖版。w/h 始终是当前编辑画布尺寸
     colorMode: 'bwr',
     layers: [], activeLayer: null, drawing: false, erasing: false,
     sourceData: null, processed: null,
@@ -65,6 +82,7 @@
     smooth: true, autoFit: true,
     zoom: 1, panX: 0, panY: 0,
     hover: null, spaceSource: false,
+    brushCursor: null, shiftDown: false,   // 画笔圆圈光标 / Shift 直线
     renderMs: 0,
     palette: B.makePalette(PANELS.modes.bwr.colors),
     encoding: 'gateway',
@@ -85,6 +103,32 @@
   /* ---------------------------------------------------------------- utils */
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function newCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+  /* 最终产物（PNG / 传给价签）永远是横版：竖版编辑时把编辑尺寸换回来。 */
+  function outDims() {
+    return state.portrait ? { w: state.h, h: state.w } : { w: state.w, h: state.h };
+  }
+  /* 竖版编辑 → 横版成品：内容顺时针旋转 90°。codes 逐像素换算，画布用等价仿射变换。 */
+  function outputCodes() {
+    if (!state.portrait || !state.codes) return state.codes;
+    const ew = state.w, eh = state.h;       // 编辑尺寸（竖版）
+    const out = new Uint8Array(eh * ew);    // 成品尺寸（横版）
+    for (let y = 0; y < eh; y++) {
+      const row = y * ew;
+      for (let x = 0; x < ew; x++) out[x * eh + (eh - 1 - y)] = state.codes[row + x];
+    }
+    return out;
+  }
+
+  function outputCanvas(src) {
+    if (!state.portrait || !src) return src;
+    const { w, h } = outDims();
+    const canvas = newCanvas(w, h);
+    const g = canvas.getContext('2d');
+    g.translate(w, 0);
+    g.rotate(Math.PI / 2);
+    g.drawImage(src, 0, 0);
+    return canvas;
+  }
   function ctx2(c) { return c.getContext('2d', { willReadFrequently: true }); }
   function hex4(n) { return n.toString(16).toUpperCase().padStart(4, '0'); }
   function fmtInt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
@@ -119,7 +163,8 @@
     let s = String(state.layers[0]?.name || '').replace(/\.[^.]+$/, '');
     s = s.replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '');
     if (!s || s === '尚未载入') s = 'bwr';
-    return s + '-' + state.w + 'x' + state.h;
+    const out = outDims();
+    return s + '-' + out.w + 'x' + out.h;
   }
 
   function setCanvasRGBA(canvas, w, h, rgba) {
@@ -661,7 +706,7 @@
     const number = ++textCount;
     const layer = newLayer('text', {
       name: number === 1 ? '文字' : '文字 ' + number,
-      width: state.w, height: state.h, text: '', ink: '#000000',
+      width: state.w, height: state.h, text: '', ink: '#000000', fontFamily: '',
       fontSize: Math.max(4, Math.round(Math.min(state.w, state.h) * 0.1)),
     });
     state.layers.push(layer);
@@ -758,18 +803,21 @@
     return workCtx;
   }
 
+  function layerBase(layer, w, h) {
+    const radians = layer.angle * Math.PI / 180;
+    const c = Math.abs(Math.cos(radians)), s = Math.abs(Math.sin(radians));
+    const iw = layer.width, ih = layer.height;
+    if (layer.kind !== 'image') return Math.min(w / iw, h / ih);
+    if (layer.fit === 'cover') return Math.max((w * c + h * s) / iw, (w * s + h * c) / ih);
+    return Math.min(w / (iw * c + ih * s), h / (iw * s + ih * c));
+  }
+
   function layerGeometry(layer) {
     const { w, h } = state;
     const radians = layer.angle * Math.PI / 180;
     const cos = Math.cos(radians), sin = Math.sin(radians);
-    const c = Math.abs(cos), s = Math.abs(sin);
-    const iw = layer.width, ih = layer.height;
-    let base;
-    if (layer.kind !== 'image') base = Math.min(w / iw, h / ih);
-    else if (layer.fit === 'cover') base = Math.max((w * c + h * s) / iw, (w * s + h * c) / ih);
-    else base = Math.min(w / (iw * c + ih * s), h / (iw * s + ih * c));
     return { x: w * (0.5 + layer.x), y: h * (0.5 + layer.y), radians, cos, sin,
-      scale: base * layer.zoom / 100 };
+      scale: layerBase(layer, w, h) * layer.zoom / 100 };
   }
 
   function drawStrokes(ctx, strokes) {
@@ -797,7 +845,7 @@
   function drawText(ctx, layer, color) {
     const lines = layer.text.split('\n');
     const lineHeight = layer.fontSize * 1.25;
-    ctx.font = `600 ${layer.fontSize}px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.font = `600 ${layer.fontSize}px ${fontStackOf(layer.fontFamily)}`;
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -980,7 +1028,8 @@
   }
 
   function updatePack() {
-    state.pack = B.pack(state.codes, state.w, state.h, {
+    const out = outDims();
+    state.pack = B.pack(outputCodes(), out.w, out.h, {
       colorMode: state.colorMode, encoding: state.encoding,
       invertBW: PANELS.modes[state.colorMode].bits === 1 && state.invertBW, invertRed: state.invertRed,
     });
@@ -1126,6 +1175,21 @@
       g.strokeRect(l.ox + state.hover.x * l.zoom + 0.5, l.oy + state.hover.y * l.zoom + 0.5, l.zoom, l.zoom);
     }
 
+    // 画笔/橡皮的实际落笔范围（画布像素 × 当前预览缩放）
+    if ((state.drawing || state.erasing) && state.brushCursor && insideArtwork(state.brushCursor)) {
+      const cx = l.ox + state.brushCursor.x * l.zoom;
+      const cy = l.oy + state.brushCursor.y * l.zoom;
+      const r = Math.max(1, brushSizePx() * l.zoom / 2);
+      g.save();
+      g.beginPath();
+      g.arc(cx, cy, r, 0, Math.PI * 2);
+      g.fillStyle = state.erasing ? 'rgba(255,255,255,.12)' : 'rgba(23,96,217,.10)';
+      g.fill();
+      g.lineWidth = 2; g.strokeStyle = 'rgba(255,255,255,.95)'; g.stroke();
+      g.lineWidth = 1; g.strokeStyle = 'rgba(20,24,34,.85)'; g.stroke();
+      g.restore();
+    }
+
     updateSplitUI(l);
     updateStatus();
   }
@@ -1137,8 +1201,10 @@
       return;
     }
     const chunks = Math.ceil(state.pack.bytes / 120);
+    const out = outDims();
     $('statusLeft').textContent =
-      state.w + '×' + state.h + ' · ' + state.pack.bytes + ' B · ' + chunks + ' 块 @120 B · ' +
+      (state.portrait ? state.w + '×' + state.h + ' 竖版编辑 → ' : '') +
+      out.w + '×' + out.h + ' · ' + state.pack.bytes + ' B · ' + chunks + ' 块 @120 B · ' +
       $('planeBadge').textContent + ' · ' + state.pack.stride + ' B/行';
     $('statusRight').textContent =
       state.renderMs.toFixed(1) + ' ms · ' + viewName(state.view) + ' · ' + Math.round(state.zoom * 100) + '%';
@@ -1201,7 +1267,8 @@
   function updateExportInfo() {
     if (!state.pack) return;
     const p = state.pack;
-    $('sizeBadge').textContent = state.w + '×' + state.h;
+    const out = outDims();
+    $('sizeBadge').textContent = out.w + '×' + out.h;
     $('bwInfo').textContent = p.planeBytes + ' B';
     $('redInfo').textContent = p.plane1 ? p.planeBytes + ' B' : '—';
     $('allInfo').textContent = p.bytes + ' B';
@@ -1222,7 +1289,8 @@
     $('mPixels').textContent = state.w + '×' + state.h;
     $('mBytes').textContent = '—';
     $('renderTime').textContent = '—';
-    $('sizeBadge').textContent = state.w + '×' + state.h;
+    const out = outDims();
+    $('sizeBadge').textContent = out.w + '×' + out.h;
     $('bwInfo').textContent = $('redInfo').textContent = $('allInfo').textContent = '—';
     ['crc0', 'crc1', 'crcAll', 'byteCount'].forEach((id) => { $(id).textContent = '—'; });
     ['thumbResult', 'thumbBW', 'thumbRED'].forEach((id) => {
@@ -1360,9 +1428,6 @@
 
   function syncFramingUI() {
     const layer = state.activeLayer || DEFAULT_TRANSFORM;
-    const zoom = Math.round(layer.zoom);
-    $('imgZoom').value = String(zoom);
-    $('imgZoomOut').textContent = zoom + '%';
     $('angle').value = String(layer.angle);
     $('angleOut').textContent = layer.angle + '°';
     $('fitSelect').value = state.activeLayer?.fit || 'contain';
@@ -1372,7 +1437,6 @@
     const layer = state.activeLayer;
     const index = state.layers.indexOf(layer);
     state.drawing = !!(layer?.visible && layer.kind === 'ink' && !state.erasing);
-    $('layerTransform').hidden = !layer;
     $('fitField').hidden = layer?.kind !== 'image';
     $('layerConversion').hidden = !layer;
     $('eraseBtn').hidden = !layer?.visible;
@@ -1387,6 +1451,7 @@
     if (text) {
       if ($('textBody').value !== text.text) $('textBody').value = text.text;
       $('textSize').value = String(text.fontSize);
+      $('textFont').value = text.fontFamily || '';
       const colors = PANELS.modes[state.colorMode].colors;
       const rgb = B.hexToRgb(text.ink);
       const mapped = B.quantize({ w: 1, h: 1, rgb, palette: state.palette, colorMode: state.colorMode,
@@ -1404,7 +1469,7 @@
     $('layerUp').disabled = index < 0 || index === state.layers.length - 1;
     $('layerDown').disabled = index < 1;
     $('layerVisible').textContent = layer?.visible ? '隐藏' : '显示';
-    $('layerList').querySelectorAll('button').forEach((button) => {
+    $('layerList').querySelectorAll('button[data-layer]').forEach((button) => {
       button.setAttribute('aria-pressed', String(Number(button.dataset.layer) === index));
     });
     $('view').classList.toggle('editable', !!layer?.visible);
@@ -1413,15 +1478,31 @@
     const hint = touch ? '双指缩放 · 三指旋转' : '滚轮缩放';
     const action = state.erasing ? '拖动擦除' : state.drawing ? '单指手写' : '拖动移动图层';
     $('view').title = layer?.visible ? action + ' · ' + hint : '';
+    if (state.brushCursor) {
+      if (state.drawing || state.erasing) drawStage();   // 笔/橡皮切换时圆圈跟着换尺寸
+      else clearBrushCursor();
+    }
     if (state.drawing && state.view !== 'result') setView('result');
     syncFramingUI();
   }
+
+  const EYE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>';
+  const EYE_OFF_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.1 1.1c-.15.35-.23.73-.23 1.1 0 1.66 1.34 3 3 3 .37 0 .75-.08 1.1-.23l1.1 1.1c-.67.41-1.44.63-2.2.63-2.76 0-5-2.24-5-5 0-.76.22-1.53.63-2.2zm3.8-2.9L12 7.5c2.76 0 5 2.24 5 5 0 .37-.08.75-.23 1.1l1.6 1.6c.41-.67.63-1.44.63-2.2 0-2.76-2.24-5-5-5-.76 0-1.53.22-2.2.63z"/></svg>';
 
   function renderLayerList() {
     const entries = document.createDocumentFragment();
     for (let i = state.layers.length - 1; i >= 0; i--) {
       const layer = state.layers[i];
       const item = document.createElement('li');
+      item.className = 'layer-item';
+      const eye = document.createElement('button');
+      eye.className = 'layer-eye';
+      eye.type = 'button';
+      eye.dataset.visibility = i;
+      eye.innerHTML = layer.visible ? EYE_ICON : EYE_OFF_ICON;
+      eye.title = layer.visible ? '隐藏此图层' : '显示此图层';
+      eye.setAttribute('aria-label', eye.title);
+      eye.setAttribute('aria-pressed', String(layer.visible));
       const button = document.createElement('button');
       const name = document.createElement('span');
       const kind = document.createElement('span');
@@ -1434,7 +1515,7 @@
       kind.className = 'layer-kind';
       kind.textContent = layer.visible ? LAYER_KINDS[layer.kind] : '已隐藏';
       button.append(name, kind);
-      item.append(button);
+      item.append(eye, button);
       entries.append(item);
     }
     $('layerList').replaceChildren(entries);
@@ -1454,12 +1535,11 @@
     updateLayerStack();
   }
 
-  function toggleLayerVisibility() {
-    const layer = state.activeLayer;
+  function toggleLayerVisibility(layer = state.activeLayer) {
     if (!layer) return;
     endStageInteraction();
     layer.visible = !layer.visible;
-    state.erasing = false;
+    if (!layer.visible && state.activeLayer === layer) state.erasing = false;
     updateLayerStack();
   }
 
@@ -1557,6 +1637,20 @@
     });
   }
 
+  function updateOrientationUI() {
+    const btn = $('rotateBtn');
+    const out = outDims();
+    $('rotateLabel').textContent = state.portrait ? '竖版' : '横版';
+    btn.setAttribute('aria-pressed', String(state.portrait));
+    btn.classList.toggle('primary', state.portrait);
+    btn.title = state.portrait
+      ? '当前竖版编辑 ' + state.w + '×' + state.h + '；导出/传图会顺时针旋转成横版 ' + out.w + '×' + out.h
+      : '当前横版编辑 ' + state.w + '×' + state.h + '；点一下改为竖版编辑，导出/传图仍是横版';
+    $('orientBadge').textContent = state.portrait
+      ? '竖版编辑 → 横版 ' + out.w + '×' + out.h
+      : '横版 ' + out.w + '×' + out.h;
+  }
+
   function updateSmoothUI() {
     const b = $('smoothBtn');
     b.classList.toggle('primary', state.smooth);
@@ -1602,6 +1696,27 @@
     return point.x >= 0 && point.x < state.w && point.y >= 0 && point.y < state.h;
   }
 
+  function brushSizePx() {
+    const input = $(state.erasing ? 'eraseWidth' : 'brushWidth');
+    return input ? (+input.value || 1) : 1;
+  }
+
+  function clearBrushCursor() {
+    if (!state.brushCursor) return;
+    state.brushCursor = null;
+    drawStage();
+  }
+
+  function updateBrushCursor(e) {
+    if (!(state.drawing || state.erasing)) return clearBrushCursor();
+    const point = artworkPoint(e, stageLayout());
+    if (!insideArtwork(point)) return clearBrushCursor();
+    const prev = state.brushCursor;
+    if (prev && prev.x === point.x && prev.y === point.y) return;
+    state.brushCursor = point;
+    drawStage();
+  }
+
   function localPoint(point, geometry) {
     const x = point.x - geometry.x, y = point.y - geometry.y;
     return {
@@ -1631,7 +1746,7 @@
       drawStage();
       return;
     }
-    const zoom = clamp(layer.zoom * factor, +$('imgZoom').min, +$('imgZoom').max);
+    const zoom = clamp(layer.zoom * factor, ZOOM_MIN, ZOOM_MAX);
     const change = 1 - zoom / layer.zoom;
     layer.x += (point.x / state.w - 0.5 - layer.x) * change;
     layer.y += (point.y / state.h - 0.5 - layer.y) * change;
@@ -1644,12 +1759,15 @@
 
   function startStageDrag(e) {
     const layer = state.activeLayer;
-    const preview = state.debugOpen && (e.shiftKey || e.button === 1);
+    // 按住 Shift 画直线时不进入「平移预览」，即使在手动模式下也一样
+    const preview = state.debugOpen && !state.drawing && !state.erasing && (e.shiftKey || e.button === 1);
     if (!layer || stageDrag || !e.isPrimary || (e.button !== 0 && !preview) || e.button > 1) return;
     const l = stageLayout();
     const point = artworkPoint(e, l);
     if (!preview && (!layer.visible || !insideArtwork(point))) return;
     e.preventDefault();
+    state.shiftDown = !!e.shiftKey;
+    updateBrushCursor(e);
     if (document.activeElement === $('textBody')) $('textBody').blur();
     const drag = {
       id: e.pointerId, layer, preview, x: e.clientX, y: e.clientY,
@@ -1661,11 +1779,14 @@
     if (preview) state.autoFit = false;
     if (!preview && (state.drawing || state.erasing)) {
       drag.geometry = layerGeometry(layer);
+      const start = localPoint(point, drag.geometry);
+      drag.startPoint = start;
+      drag.shiftEnd = start;
       drag.stroke = {
         order: layer.revision,
         ink: state.erasing ? null : $('brushColor').value,
-        width: +$(state.erasing ? 'eraseWidth' : 'brushWidth').value / drag.geometry.scale,
-        points: [localPoint(point, drag.geometry)],
+        width: brushSizePx() / drag.geometry.scale,
+        points: [start],
       };
       drag.strokes = state.erasing ? layer.erasures : layer.strokes;
       drag.strokes.push(drag.stroke);
@@ -1682,6 +1803,8 @@
 
   function moveStageDrag(e) {
     const drag = stageDrag;
+    state.shiftDown = !!e.shiftKey;
+    updateBrushCursor(e);
     if (!drag) {
       if (state.debugOpen) inspectAt(e);
       return;
@@ -1698,15 +1821,28 @@
     if (drag.stroke) {
       const points = drag.stroke.points;
       const next = localPoint(artworkPoint(e, l), drag.geometry);
-      const last = points[points.length - 1];
+      const last = state.shiftDown ? drag.shiftEnd : points[points.length - 1];
       if (next.x === last.x && next.y === last.y) return;
-      points.push(next);
+      drag.shiftEnd = next;
+      // Shift：只保留起点和当前点，松开后可接着自由画（像 PS 的强制直线）
+      drag.stroke.points = state.shiftDown ? [drag.startPoint, next] : [...points, next];
       drag.layer.revision++;
     } else {
       drag.layer.x = drag.fromX + dx / l.iw;
       drag.layer.y = drag.fromY + dy / l.ih;
     }
     drag.changed = true;
+    scheduleSource(true);
+  }
+
+  // 画到一半按下 Shift：把已经画出的折线收成「起点 → 当前点」的直线
+  function syncShiftStroke() {
+    const drag = stageDrag;
+    if (!drag?.stroke || !state.shiftDown) return;
+    const end = drag.shiftEnd;
+    if (!end || (end.x === drag.startPoint.x && end.y === drag.startPoint.y)) return;
+    drag.stroke.points = [drag.startPoint, end];
+    drag.layer.revision++;
     scheduleSource(true);
   }
 
@@ -1813,7 +1949,7 @@
     }
     const factor = pinch ? Math.hypot(dot, cross) / gesture.spread : 1;
     const zoom = layer.zoom * gesture.scale * factor / layerGeometry(layer).scale;
-    layer.zoom = clamp(zoom, +$('imgZoom').min, +$('imgZoom').max);
+    layer.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
 
     const point = artworkPoint(center, stageLayout());
     const { scale, cos, sin } = layerGeometry(layer);
@@ -1906,9 +2042,10 @@
     finishPendingRender();
     if (!state.resultCanvas) { toast('请先添加图片或手写图层', true); return; }
     try {
-      const blob = await canvasBlob(state.resultCanvas);
+      const blob = await canvasBlob(outputCanvas(state.resultCanvas));
+      const out = outDims();
       saveBlob(blob, baseName() + '-ink.png');
-      toast('已导出合成 PNG（' + state.w + '×' + state.h + '）');
+      toast('已导出横版合成 PNG（' + out.w + '×' + out.h + '）');
     } catch (e) { toast(e.message, true); }
   }
 
@@ -1917,9 +2054,9 @@
     const c = kind === 'bw' ? state.bwCanvas : state.redCanvas;
     if (!c) return;
     try {
-      const blob = await canvasBlob(c);
+      const blob = await canvasBlob(outputCanvas(c));
       saveBlob(blob, baseName() + '-' + kind + '.png');
-      toast('已导出 ' + kind.toUpperCase() + ' 层 PNG');
+      toast('已导出横版 ' + kind.toUpperCase() + ' 层 PNG');
     } catch (e) { toast(e.message, true); }
   }
 
@@ -1935,9 +2072,12 @@
   }
 
   function paramsObject() {
+    const out = outDims();
     return {
       tool: 'Ink Studio', version: B.VERSION,
-      panel: { w: state.w, h: state.h, colorMode: state.colorMode },
+      panel: { w: out.w, h: out.h, colorMode: state.colorMode },
+      edit: { orientation: state.portrait ? 'portrait' : 'landscape', w: state.w, h: state.h,
+        rotationToOutput: state.portrait ? 'cw90' : 'none' },
       palette: PANELS.modes[state.colorMode].colors,
       layers: state.layers.map(({ name, kind, visible, mapping, accentColor, pre, params }) => ({
         name, kind, visible, mapping, accentColor, preprocess: pre, quantize: params,
@@ -2068,7 +2208,10 @@
       syncLayerUI();
     });
     for (const [id, undo, key] of [['brushWidth', 'undoStroke', 'strokes'], ['eraseWidth', 'undoErase', 'erasures']]) {
-      $(id).addEventListener('input', (e) => { $(id + 'Out').textContent = e.target.value + ' px'; });
+      $(id).addEventListener('input', (e) => {
+        $(id + 'Out').textContent = e.target.value + ' px';
+        drawStage();   // 圆圈光标实时反映新的笔宽
+      });
       $(undo).addEventListener('click', () => {
         const layer = state.activeLayer;
         if (!layer?.[key]?.length) return;
@@ -2120,13 +2263,25 @@
       layer.revision++;
       scheduleSource();
     });
+    $('textFont').addEventListener('change', (e) => {
+      const layer = state.activeLayer;
+      if (layer?.kind !== 'text') return;
+      layer.fontFamily = e.target.value;
+      layer.revision++;
+      scheduleSource(true);
+    });
     $('layerList').addEventListener('click', (e) => {
+      const eye = e.target.closest('button[data-visibility]');
+      if (eye) {
+        toggleLayerVisibility(state.layers[Number(eye.dataset.visibility)]);
+        return;
+      }
       const button = e.target.closest('button[data-layer]');
       if (button) selectLayer(state.layers[Number(button.dataset.layer)]);
     });
     $('layerUp').addEventListener('click', () => moveLayer(1));
     $('layerDown').addEventListener('click', () => moveLayer(-1));
-    $('layerVisible').addEventListener('click', toggleLayerVisibility);
+    $('layerVisible').addEventListener('click', () => toggleLayerVisibility());
     $('removeLayer').addEventListener('click', removeLayer);
 
     // framing
@@ -2139,13 +2294,6 @@
     $('angle').addEventListener('input', (e) => {
       const layer = state.activeLayer;
       if (layer) setLayerAngle(layer, +e.target.value);
-    });
-    $('imgZoom').addEventListener('input', (e) => {
-      const layer = state.activeLayer;
-      if (!layer) return;
-      layer.zoom = +e.target.value;
-      syncFramingUI();
-      scheduleSource(true);
     });
     $('resetView').addEventListener('click', resetFraming);
 
@@ -2184,11 +2332,12 @@
     });
 
     // panel
+    $('rotateBtn').addEventListener('click', () => setPortrait(!state.portrait));
     $('colorMode').addEventListener('change', (e) => applyColorMode(e.target.value));
     $('panelSelect').addEventListener('change', (e) => {
-      const panel = panelById.get(e.target.value);
-      if (panel) applyPanelSize(panel.w, panel.h, panel.id, panel.modes[0]);
-      else applyPanelSize(state.w, state.h, 'custom');
+      const panel = choiceById.get(e.target.value);
+      if (panel) applyPanelSize(panel.w, panel.h, panel.id, panel.preferred);
+      else { const size = outDims(); applyPanelSize(size.w, size.h, 'custom'); }
     });
     ['customW', 'customH'].forEach((id) => {
       $(id).addEventListener('change', () => {
@@ -2206,6 +2355,7 @@
     view.addEventListener('pointercancel', endStagePointer);
     view.addEventListener('lostpointercapture', endStagePointer);
     view.addEventListener('pointerleave', () => {
+      clearBrushCursor();
       if (state.debugOpen && !stageDrag && !stageTouches.size) {
         lastHoverKey = ''; state.hover = null; updateInspector(); drawStage();
       }
@@ -2294,6 +2444,10 @@
 
     // keyboard
     document.addEventListener('keydown', (e) => {
+      if (e.key === 'Shift' && !state.shiftDown) {
+        state.shiftDown = true;
+        syncShiftStroke();
+      }
       if (!state.debugOpen || !state.layers.length || e.ctrlKey || e.altKey || e.metaKey) return;
       if (e.target.closest?.('input, select, textarea, button, a') || e.target.isContentEditable) return;
       if (e.code === 'Space') { e.preventDefault(); state.spaceSource = true; drawStage(); return; }
@@ -2310,11 +2464,14 @@
       else if (e.key === ']') zoomBy(1.25);
     });
     document.addEventListener('keyup', (e) => {
+      if (e.key === 'Shift') state.shiftDown = false;
       if (e.code === 'Space' && state.spaceSource) { state.spaceSource = false; drawStage(); }
     });
     window.addEventListener('blur', () => {
       state.spaceSource = false;
+      state.shiftDown = false;
       endStageInteraction();
+      clearBrushCursor();
       drawStage();
     });
 
@@ -2363,23 +2520,28 @@
   }
 
   function availableModes(id) {
-    return id.startsWith('epd') ? panelById.get(id).modes : Object.keys(PANELS.modes);
+    const choice = choiceById.get(id);
+    return choice ? choice.modes : Object.keys(PANELS.modes);
   }
 
   function applyColorMode(mode) {
     if (state.colorMode !== mode && availableModes(state.panelId).includes(mode)) {
-      applyPanelSize(state.w, state.h, state.panelId, mode);
+      const size = outDims();
+      applyPanelSize(size.w, size.h, state.panelId, mode);
     }
   }
 
   function applyPanelSize(w, h, id, mode = state.colorMode) {
     w = clamp(Math.round(w) || 400, 8, 1024);
     h = clamp(Math.round(h) || 300, 8, 1024);
+    const choice = choiceById.get(id);
+    if (choice) id = choice.id;   // 存档/链接里的旧型号 id 归到合并后的选项
     endStageInteraction();
     const panel = panelById.get(id);
     state.panelId = panel?.w === w && panel.h === h ? id : 'custom';
-    state.w = w;
-    state.h = h;
+    // w/h 是目标面板的横版尺寸；编辑时竖版则交换
+    state.w = state.portrait ? h : w;
+    state.h = state.portrait ? w : h;
     state.hover = null;
     lastHoverKey = '';
     const modes = availableModes(state.panelId);
@@ -2392,7 +2554,49 @@
     $('sizeCustom').hidden = state.panelId !== 'custom';
     state.autoFit = true;
     syncControls();
+    updateOrientationUI();
     fitView(false);
+    rebuildSource();
+    saveSoon();
+    scheduleFit();
+  }
+
+  /* 旋转画布：横版 ↔ 竖版。编辑内容整体转 90°，导出/传图时再顺时针转回横版。 */
+  function setPortrait(on) {
+    on = !!on;
+    if (state.portrait === on) return;
+    endStageInteraction();
+    const oldW = state.w, oldH = state.h;
+    const scales = new Map(state.layers.map((layer) => [layer, layerGeometry(layer).scale]));
+    const cw = on;   // 横→竖：内容顺时针；竖→横：内容逆时针
+    for (const layer of state.layers) {
+      const x = layer.x, y = layer.y;
+      layer.x = cw ? -y : y;
+      layer.y = cw ? x : -x;
+      layer.angle = ((layer.angle + (cw ? 90 : -90) + 180) % 360 + 360) % 360 - 180;
+      if (layer.kind !== 'image') {
+        const width = layer.width; layer.width = layer.height; layer.height = width;
+      }
+      // 笔画点存的是图层局部坐标，跟着 layer.angle 一起转，不能再单独旋转
+      layer.revision++;
+      layer.cache = null;
+    }
+    state.portrait = on;
+    state.w = oldH; state.h = oldW;
+    // 宽高互换后 layerBase 会变，补偿 zoom 让图层实际渲染尺寸不变
+    for (const layer of state.layers) {
+      const base = layerBase(layer, state.w, state.h);
+      if (base > 0) {
+        layer.zoom = clamp(scales.get(layer) / base * 100, ZOOM_MIN, ZOOM_MAX);
+      }
+    }
+    state.hover = null;
+    state.brushCursor = null;
+    lastHoverKey = '';
+    syncControls();
+    syncFramingUI();
+    updateOrientationUI();
+    if (state.autoFit) fitView(false);
     rebuildSource();
     saveSoon();
     scheduleFit();
@@ -2406,8 +2610,10 @@
 
   function saveState() {
     try {
+      const size = outDims();
       localStorage.setItem(LS_KEY, JSON.stringify({
-        panel: { w: state.w, h: state.h, id: state.panelId, colorMode: state.colorMode },
+        panel: { w: size.w, h: size.h, id: state.panelId, colorMode: state.colorMode },
+        portrait: state.portrait,
         encoding: state.encoding,
         invertBW: state.invertBW,
         invertRed: state.invertRed,
@@ -2421,9 +2627,11 @@
       if (!raw) return;
       const s = JSON.parse(raw);
       if (s.panel && s.panel.w && s.panel.h) {
-        state.w = clamp(s.panel.w, 8, 1024);
-        state.h = clamp(s.panel.h, 8, 1024);
-        state.panelId = s.panel.id || (state.w + 'x' + state.h);
+        const pw = clamp(s.panel.w, 8, 1024), ph = clamp(s.panel.h, 8, 1024);
+        state.portrait = !!s.portrait;
+        state.w = state.portrait ? ph : pw;
+        state.h = state.portrait ? pw : ph;
+        state.panelId = s.panel.id || (pw + 'x' + ph);
         if (Object.hasOwn(PANELS.modes, s.panel.colorMode)) state.colorMode = s.panel.colorMode;
       }
       if (s.encoding === 'gateway' || s.encoding === 'driver') state.encoding = s.encoding;
@@ -2503,11 +2711,16 @@
       const modeInfo = PANELS.modes[state.colorMode];
       const maxCode = modeInfo.colors.length - 1;
       const planeCount = hasAccent() ? 2 : 1;
-      const expectedBytes = Math.ceil(state.w * modeInfo.bits / 8) * state.h * planeCount;
-      out.push('sample=' + state.activeLayer.name + ' canvas=' + state.w + 'x' + state.h + ' mode=' + state.colorMode);
+      const size = outDims();
+      const expectedBytes = Math.ceil(size.w * modeInfo.bits / 8) * size.h * planeCount;
+      out.push('sample=' + state.activeLayer.name + ' canvas=' + state.w + 'x' + state.h +
+        ' output=' + size.w + 'x' + size.h + (state.portrait ? ' (竖版→横版)' : '') + ' mode=' + state.colorMode);
       if (!state.codes || state.codes.length !== state.w * state.h) throw new Error('code buffer length');
       if (!state.pack || state.pack.bytes !== expectedBytes ||
           Boolean(state.pack.plane1) !== hasAccent()) throw new Error('pack size or plane count');
+      const outCodes = outputCodes();
+      if (outCodes.length !== size.w * size.h) throw new Error('output code buffer length');
+      if (state.portrait && outCodes === state.codes) throw new Error('portrait rotation missing');
       out.push('pack bytes=' + state.pack.bytes + ' crc0=0x' + hex4(state.pack.crc0) +
         (hasAccent() ? ' crc1=0x' + hex4(state.pack.crc1) : ''));
       out.push('coverage=' + state.metrics.coverage.map((v) => (v * 100).toFixed(1) + '%').join('/'));
@@ -2563,26 +2776,27 @@
     if (q.get('fresh') !== '1') loadSaved();
     const colorMode = q.get('colorMode');
     if (Object.hasOwn(PANELS.modes, colorMode)) state.colorMode = colorMode;
+    $('textFont').replaceChildren(...TEXT_FONTS.map((f) => new Option(f.label, f.id)));
     const select = $('panelSelect');
     const generic = document.createElement('optgroup');
     generic.label = '常用画布';
-    const arduino = document.createElement('optgroup');
-    arduino.label = 'Arduino 示例';
-    for (const panel of PANELS.panels) {
-      const colors = panel.modes.map(key => PANELS.modes[key].label).join(' / ');
-      const name = panel.name + ' · ' + panel.w + ' × ' + panel.h + ' · ' + colors;
-      (panel.id.startsWith('epd') ? arduino : generic).append(new Option(name, panel.id));
+    const models = document.createElement('optgroup');
+    models.label = '屏幕型号';
+    for (const panel of PANELS.choices) {
+      const name = panel.name + ' · ' + panel.w + ' × ' + panel.h + ' · ' + panel.colorLabel;
+      (panel.generic ? generic : models).append(new Option(name, panel.id));
     }
-    select.append(generic, arduino, new Option('自定义…', 'custom'));
+    select.append(generic, models, new Option('自定义…', 'custom'));
     bindEvents();
     updateSmoothUI();
+    updateOrientationUI();
 
-    const model = panelById.get(q.get('panel'));
+    const model = choiceById.get(q.get('panel'));
     const panel = (q.get('panel') || '').match(/^(\d+)x(\d+)$/);
     if (model) applyPanelSize(model.w, model.h, model.id);
     else if (panel) applyPanelSize(+panel[1], +panel[2], panel[0]);
     else if (q.has('w') && q.has('h')) applyPanelSize(+q.get('w'), +q.get('h'), 'custom');
-    else applyPanelSize(state.w, state.h, state.panelId);
+    else { const size = outDims(); applyPanelSize(size.w, size.h, state.panelId); }
 
     if (q.get('selftest')) {
       runSelfTest();
@@ -2598,6 +2812,7 @@
     state: state, B: B, reprocess: reprocess, rebuildSource: rebuildSource,
     loadSample: loadSample, applyPreset: applyPreset, fitView: fitView,
     setView: setView, setSplit: setSplit, repack: repack, drawHistogram: drawHistogram,
+    setPortrait: setPortrait, outDims: outDims, outputCodes: outputCodes, outputCanvas: outputCanvas,
     errors: runtimeErrors, finishPendingRender: finishPendingRender,
   };
 

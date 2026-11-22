@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5f5f9">
-<title>Ink Studio · 墨水屏传图</title>
-<link rel="stylesheet" href="bwr.css?v=4">
+<title>Ink Studio · 传图</title>
+<link rel="stylesheet" href="bwr.css?v=6">
 </head>
 <body>
 <header class="topbar">
@@ -17,6 +17,7 @@
     <nav class="app-tabs" role="tablist" aria-label="工具">
       <button class="app-tab active" id="tabImage" data-tab="image" role="tab" aria-selected="true" aria-controls="app">传图工具</button>
       <button class="app-tab" id="tabCards" data-tab="cards" role="tab" aria-selected="false" aria-controls="pageCards">模式卡片</button>
+      <button class="app-tab" id="tabFonts" data-tab="fonts" role="tab" aria-selected="false" aria-controls="pageFonts">字模</button>
       <button class="app-tab" id="tabOta" data-tab="ota" role="tab" aria-selected="false" aria-controls="pageOta">OTA 工具</button>
     </nav>
     <div class="nav-actions">
@@ -29,7 +30,7 @@
 <main class="app" id="app">
   <section class="workspace" aria-labelledby="pageTitle">
     <header class="workspace-head">
-      <h1 id="pageTitle">墨水屏传图</h1>
+      <h1 id="pageTitle">传图</h1>
       <div class="panel-controls">
         <label class="panel-pick">
           <select id="panelSelect" aria-label="目标面板"></select>
@@ -37,6 +38,13 @@
         <label class="panel-pick">
           <select id="colorMode" aria-label="屏幕色彩模式"></select>
         </label>
+        <button class="btn sm orient-btn" id="rotateBtn" type="button" aria-pressed="false" title="编辑画布方向：横版 / 竖版。导出 PNG 和传给价签始终是横版">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M13.5 7.5a5.5 5.5 0 1 1-1.6-3.9"></path>
+            <path d="M13.5 2.5v3h-3"></path>
+          </svg>
+          <span id="rotateLabel">横版</span>
+        </button>
         <span class="size-custom" id="sizeCustom" hidden>
           <input id="customW" type="number" min="8" max="1024" step="1" value="800" aria-label="自定义宽度">
           <span>×</span>
@@ -117,6 +125,7 @@
             <option value="bayer8">Bayer 8×8</option>
           </select>
           </label>
+          <label class="range-row angle-control">旋转 <input id="angle" type="range" min="-180" max="180" step="1" value="0"><output id="angleOut">0°</output></label>
           <label class="editor-field" id="mappingField"><span><span data-accent-name></span>映射</span>
             <select id="layerMapping">
               <option value="ink">图层原色</option>
@@ -132,6 +141,13 @@
           <label class="editor-field" id="mapColorField" hidden>源色
             <input id="mapColor" type="color" value="#0080ff">
           </label>
+          <label class="editor-field" id="fitField">适配
+            <select id="fitSelect">
+              <option value="cover">铺满</option>
+              <option value="contain">完整</option>
+            </select>
+          </label>
+          <button class="link" id="resetView" type="button">复位</button>
         </div>
         <div class="editor-actions" id="editorActions">
           <button class="btn sm" id="eraseBtn" type="button" aria-pressed="false" aria-controls="eraseTools" hidden>擦除</button>
@@ -165,23 +181,14 @@
           <label class="editor-field">字号（px）
             <input id="textSize" type="number" min="4" max="512" step="1" inputmode="numeric">
           </label>
+          <label class="editor-field">字体
+            <select id="textFont"></select>
+          </label>
           <label class="editor-field">墨色
             <select id="textColor"></select>
           </label>
         </div>
       </div>
-      <div class="editor-tray transform-tray" id="layerTransform" role="group" aria-label="图层变换" hidden>
-        <label class="range-row">旋转 <input id="angle" type="range" min="-180" max="180" step="1" value="0"><output id="angleOut">0°</output></label>
-        <label class="range-row">缩放 <input id="imgZoom" type="range" min="10" max="400" step="1" value="100"><output id="imgZoomOut">100%</output></label>
-        <label class="editor-field" id="fitField">适配
-          <select id="fitSelect">
-            <option value="cover">铺满</option>
-            <option value="contain">完整</option>
-          </select>
-        </label>
-        <button class="link" id="resetView" type="button">复位</button>
-      </div>
-
       <div class="stage-status" id="debugStatus" hidden>
         <span class="mono" id="statusLeft">—</span>
         <span class="mono" id="statusRight">—</span>
@@ -324,6 +331,7 @@
       <div class="block-head">
         <h2>导出</h2>
         <span class="badge" id="sizeBadge">—</span>
+        <span class="badge" id="orientBadge">横版</span>
       </div>
       <label class="field" data-bwr>位图编码
         <select id="encoding">
@@ -409,12 +417,12 @@
         <p class="hint" id="cardCdNote"></p>
       </div>
       <div class="card-fields" id="cardQuotes" hidden>
-        <label>每天一条，最多 255 条、整包 16 KB。每行填「正文 | 出处」。
+        <label>每天一条，最多 255 条、整包 16 KB。每行填「正文 | 出处」，「追加 7 条一言」是加在列表末尾，不会覆盖已经写好的。
           <textarea id="cardQuoteRows" rows="6" placeholder="海内存知己，天涯若比邻。 | 王勃"></textarea>
         </label>
         <div class="ble-actions">
           <button class="btn ghost" id="cardQuoteDemo" type="button">填入示例</button>
-          <button class="btn ghost" id="cardQuoteFetch" type="button">取 7 条一言</button>
+          <button class="btn ghost" id="cardQuoteFetch" type="button">追加 7 条一言</button>
         </div>
         <p class="hint" id="cardQuoteNote"></p>
         <p class="hint" id="cardQuoteStatus" role="status"></p>
@@ -432,6 +440,80 @@
         <button class="btn primary" id="cardPush" type="button" disabled>推送卡片并刷新</button>
       </div>
       <p class="ble-status" id="cardStatus" role="status" hidden></p>
+    </section>
+  </div>
+</section>
+
+<section class="page-card" id="pageFonts" hidden>
+  <div class="page-head">
+    <div>
+      <h1>字模 · 字库打包</h1>
+      <p class="page-lead">在本机把字体栅格化成 1 bit 字模，打成价签直接读的 FNT1 字库，再用 BLE 写进 U5。生成和写入都不经过服务器。</p>
+    </div>
+    <span class="badge" id="fontLinkBadge">未连接</span>
+  </div>
+
+  <div class="ota-grid">
+    <section class="ota-panel">
+      <h2>1. 字体</h2>
+      <label class="ota-file">本机字体
+        <select id="fontFace"></select>
+      </label>
+      <div class="ble-actions">
+        <button class="btn sm ghost" id="fontRefresh" type="button">重新检测</button>
+        <label class="btn sm ghost" for="fontFile">载入字体文件…</label>
+        <input id="fontFile" type="file" accept=".ttf,.otf,.woff,.woff2,.ttc" hidden>
+      </div>
+      <label class="range-row">笔画阈值 <input id="fontThresh" type="range" min="90" max="210" step="1" value="150"><output id="fontThreshOut">150</output></label>
+      <p class="hint">阈值越低笔画越粗（默认 150，和 <code>pack_fullfont.py</code> 一致）。改完在下面的预览里看效果。</p>
+    </section>
+
+    <section class="ota-panel">
+      <h2>2. 覆盖范围</h2>
+      <label class="ota-file">预设
+        <select id="fontPreset"></select>
+      </label>
+      <div class="ota-kv" id="fontPlan"></div>
+      <p class="hint">只有这四档：16 px 和 24 px 不再单独挑，半角 ASCII 与标点符号跟着字号一起进包。字库区在 U5 上一共 750 KB，最大的一档正好装下。</p>
+    </section>
+  </div>
+
+  <div class="ota-grid">
+    <section class="ota-panel ota-wide">
+      <h2>3. 预览</h2>
+      <div class="font-preview-tools">
+        <label class="range-row">放大 <input id="fontZoom" type="range" min="2" max="10" step="1" value="4"><output id="fontZoomOut">4×</output></label>
+        <label class="check"><input id="fontBold" type="checkbox"> 加粗（笔画加宽 1 px，会真的写进字库）</label>
+      </div>
+      <canvas id="fontPreview" class="font-preview" width="640" height="120" aria-label="屏上字模预览"></canvas>
+      <p class="hint" id="fontFaceHint">—</p>
+      <p class="hint">每格一个 1 bit 字面：格子里的每个小方点就是一个像素，格子下面标着这个字占了多少格。加粗在 16 px 上容易糊，先看预览再决定要不要。</p>
+    </section>
+  </div>
+
+  <div class="ota-grid">
+    <section class="ota-panel">
+      <h2>4. 生成</h2>
+      <div class="ble-actions">
+        <button class="btn primary" id="fontBuild" type="button">生成字库</button>
+        <button class="btn ghost" id="fontDownload" type="button" disabled>下载 .fnt</button>
+      </div>
+      <progress id="fontBuildProgress" max="1" value="0" hidden></progress>
+      <p class="ble-status" id="fontBuildStatus" role="status" hidden></p>
+      <div class="ota-kv" id="fontResult"></div>
+    </section>
+
+    <section class="ota-panel">
+      <h2>5. 写进价签</h2>
+      <div class="ble-actions">
+        <button class="btn ghost" id="fontConnect" type="button">连接价签</button>
+        <button class="btn ghost" id="fontDisconnect" type="button" hidden>断开</button>
+        <button class="btn primary" id="fontUpload" type="button" disabled>写入 U5</button>
+      </div>
+      <p class="ble-support" id="fontSupport" hidden></p>
+      <progress id="fontProgress" max="1" value="0" hidden></progress>
+      <p class="ble-status" id="fontStatus" role="status" hidden></p>
+      <p class="hint">写完必须<strong>断电重启</strong>价签：字库只在开机那一次加载（<code>pak_init_u5</code>）。上传前请确认价签没在刷屏。</p>
     </section>
   </div>
 </section>
@@ -498,11 +580,13 @@
 <noscript><div class="noscript">Ink Studio 需要 JavaScript。</div></noscript>
 <script src="core.js"></script>
 <script src="panels.js"></script>
-<script src="app.js"></script>
-<script src="ble-transfer.js?v=4"></script>
-<script src="cards.js?v=2"></script>
+<script src="app.js?v=6"></script>
+<script src="ble-transfer.js?v=5"></script>
+<script src="cards.js?v=3"></script>
 <script src="ota-core.js"></script>
 <script src="ota.js?v=1"></script>
-<script src="tabs.js?v=1"></script>
+<script src="fontpack.js?v=2"></script>
+<script src="fonts.js?v=2"></script>
+<script src="tabs.js?v=2"></script>
 </body>
 </html>

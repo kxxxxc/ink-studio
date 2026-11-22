@@ -47,5 +47,42 @@
     ['epd7in5bc_V2', 800, 480, 'bwr bwy'],
   ].map(([id, w, h, supported, name = id]) => ({ id, name, w, h, modes: supported.split(' ') }));
 
-  window.INK_PANELS = { modes, panels };
+  /* 下拉框选项：同一尺寸/分辨率的 Arduino 型号合并成一项，色彩取这些型号的并集；
+     具体用哪种颜色由旁边的「屏幕色彩模式」决定。常用画布保持独立，方便快速选本项目的面板。 */
+  const choices = [];
+  const groups = new Map();
+  for (const panel of panels) {
+    if (!panel.id.startsWith('epd')) {
+      choices.push({
+        id: panel.id, name: panel.name, w: panel.w, h: panel.h,
+        modes: Object.keys(modes), preferred: panel.modes[0],
+        colorLabel: panel.modes.map((key) => modes[key].label).join(' / '),
+        aliases: [panel.id], generic: true,
+      });
+      continue;
+    }
+    const key = panel.w + 'x' + panel.h;
+    let group = groups.get(key);
+    if (!group) {
+      group = { id: panel.id, w: panel.w, h: panel.h, modes: [], preferred: panel.modes[0],
+        aliases: [], sizes: new Set(), generic: false };
+      groups.set(key, group);
+    }
+    for (const mode of panel.modes) if (!group.modes.includes(mode)) group.modes.push(mode);
+    group.aliases.push(panel.id);
+    const inch = panel.id.match(/^epd(\d+)in(\d+)/);
+    if (inch) group.sizes.add(inch[1] + '.' + inch[2]);
+  }
+  for (const group of groups.values()) {
+    group.name = Array.from(group.sizes).join('/') + '″';
+    group.colorLabel = group.modes.map((key) => modes[key].label).join(' / ');
+    choices.push(group);
+  }
+  const choiceById = new Map();
+  for (const choice of choices) {
+    choiceById.set(choice.id, choice);
+    for (const alias of choice.aliases) choiceById.set(alias, choice);
+  }
+
+  window.INK_PANELS = { modes, panels, choices, choiceById };
 })();

@@ -336,7 +336,10 @@
     const status = await beforeTransfer('读取价签传图状态', queryStatus);
     if (status.active) return;
     lab.finishPendingRender();
-    const { codes, w, h, colorMode } = lab.state;
+    const { colorMode } = lab.state;
+    // 竖版编辑时 codes 要先顺时针旋转成横版，尺寸也用成品尺寸与价签比对
+    const codes = lab.outputCodes();
+    const { w, h } = lab.outDims();
     if (codes?.length !== w * h) throw new Error('请先添加图层');
     if (!panelMatches(panel, { w, h, colorMode })) {
       throw new Error('画布与设备规格不符：' + panelDescription(panel));
