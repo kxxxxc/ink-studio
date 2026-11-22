@@ -4,6 +4,10 @@ name: Sync Ink Studio from Gitee
 # Gitee cannot serve Pages, so Gitee stays the source of truth and this job
 # copies tools/bwr-studio into the root of new-branch on a schedule.
 on:
+  # Gitee push -> WebHook -> repository_dispatch (primary, instant)
+  repository_dispatch:
+    types: [ink-studio-sync]
+  # Fallback poll in case the webhook is not delivered
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
