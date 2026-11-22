@@ -71,27 +71,25 @@
 
   function sync() {
     const isConnected = connected();
+    const hasDevice = !!link?.hasDevice;
     const blocked = !!link?.busy || uploading;
-    $('otaConnect').hidden = isConnected;
-    $('otaConnect').disabled = !link?.canConnect || blocked;
-    $('otaDisconnect').hidden = !isConnected;
-    $('otaDisconnect').disabled = !isConnected || blocked;
-    $('otaRead').disabled = !isConnected || blocked;
-    $('otaSelftest').disabled = !isConnected || blocked;
-    $('otaAbort').disabled = !isConnected || blocked;
+    $('otaRead').disabled = !hasDevice || blocked;
+    $('otaSelftest').disabled = !hasDevice || blocked;
+    $('otaAbort').disabled = !hasDevice || blocked;
     $('otaVerify').disabled = !pkg || uploading || verifying;
-    $('otaUpload').disabled = !isConnected || !pkg?.verified || blocked || acceptable() === false;
-    $('otaLinkBadge').textContent = isConnected ? (link.name || 'ESL 价签') : '未连接';
+    $('otaUpload').disabled = !hasDevice || !pkg?.verified || blocked || acceptable() === false;
+    const label = link?.name || '';
+    $('otaLinkBadge').textContent = !hasDevice ? '未连接' : label + (isConnected ? ' · 传输中' : ' · 未连接');
     $('otaLinkBadge').classList.toggle('ble-connected', isConnected);
     $('otaProgress').hidden = !uploading && !$('otaProgress').value;
     const hint = !window.isSecureContext
       ? 'OTA 需要通过 HTTPS 或 localhost 打开。'
       : !window.navigator.bluetooth
         ? '这个浏览器没有 Web Bluetooth，请用桌面 Chrome / Edge 或 Android Chrome。'
-        : !isConnected
-          ? '先连接价签，再选择 .eslfw 固件包。'
+        : !hasDevice
+          ? '先在右上角选价签；读状态和下发时临时连接、结束断开。'
           : !pkg
-            ? '已连接，选择固件包后会先在本地验签。'
+            ? '选择 .eslfw 固件包，页面先在本地验签。'
             : pkg.verified
               ? (acceptable() === false
                 ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
@@ -103,7 +101,7 @@
 
   function renderStatus() {
     if (!ota) {
-      $('otaState').innerHTML = '<div><span>连接后读取</span><b>—</b></div>';
+      $('otaState').innerHTML = '<div><span>读取后显示</span><b>—</b></div>';
       return;
     }
     const pending = ota.pending === 255 ? '无' : '槽 ' + ota.pending + '（' + ota.tries + ' 次尝试）';
@@ -321,34 +319,31 @@
     };
   }
 
-  $('otaConnect').addEventListener('click', guard(async () => {
-    await ble.connect((message) => status(message, 'bad'));
-    if (ble.isConnected()) {
-      log('已连接 ' + (ble.deviceName() || 'ESL 价签'));
-      await readStatus();
-    }
+  const withTag = (action) => guard(() => ble.session(action, (message) => {
+    status(message, 'bad');
+    log('错误：' + message);
   }));
-  $('otaDisconnect').addEventListener('click', guard(async () => {
-    await ble.disconnect();
-    ota = null;
-    renderStatus();
-    sync();
-  }));
-  $('otaRead').addEventListener('click', guard(readStatus));
-  $('otaSelftest').addEventListener('click', guard(selfTest));
-  $('otaAbort').addEventListener('click', guard(abortTransfer));
+  $('otaRead').addEventListener('click', withTag(readStatus));
+  $('otaSelftest').addEventListener('click', withTag(selfTest));
+  $('otaAbort').addEventListener('click', withTag(abortTransfer));
   $('otaVerify').addEventListener('click', guard(verifyPkg));
-  $('otaUpload').addEventListener('click', guard(upload));
+  $('otaUpload').addEventListener('click', withTag(upload));
   $('otaFile').addEventListener('change', (event) => {
     const file = event.target.files?.[0];
     if (file) void loadFile(file);
   });
 
+  let lastTagKey = '';
   ble.subscribe((state) => {
     link = state;
-    if (!state.connected && ota) {
+    // Sessions disconnect after every operation. Invalidate cached tag status only when the
+    // selected tag actually changed, not on the normal post-transfer disconnect.
+    if (state.tagKey && state.tagKey !== lastTagKey && ota) {
+      lastTagKey = state.tagKey;
       ota = null;
       renderStatus();
+    } else if (state.tagKey) {
+      lastTagKey = state.tagKey;
     }
     sync();
   });
@@ -359,5 +354,5 @@
   renderStatus();
   renderPkg();
   sync();
-  log('就绪。先连接价签，再选择 .eslfw 固件包。');
+  log('就绪。先在右上角选价签，再选择 .eslfw 固件包。');
 })();

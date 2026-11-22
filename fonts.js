@@ -636,7 +636,7 @@
   async function upload() {
     if (uploading) return;
     if (!blob) throw new Error('先生成字库');
-    if (!ble || !ble.isConnected()) throw new Error('先连接价签');
+    if (!ble) throw new Error('传输组件尚未就绪');
     uploading = true;
     updateControls();
     $('fontProgress').hidden = false;
@@ -652,13 +652,18 @@
       const plan = F.uploadPlan(size, payload);
       status('fontStatus', `写入 U5 0x${F.hex(F.FONT_BASE, 6).slice(2)}：${F.kb(size)}，`
         + `${plan.packets.toLocaleString()} 包（每包 ${payload} B）…`);
+      // Only a begin answer echoing THIS upload's address+length settles the waiter. A loose
+      // `p[0]===0xC7 && p.length>=9` also matches a late/stale begin echo from a previous pack,
+      // which is exactly the "地址/长度不对：0x80022000 / <old size>" false alarm.
       const ack = await ble.command(F.beginFrame(F.FONT_UPLOAD_ADDR, size, crc),
-        (p) => p[0] === 0xC7 && p.length >= 9, 20000, '0x47 开始');
+        (p) => p[0] === 0xC7 && p.length === 10
+          && be32(p, 2) === F.FONT_UPLOAD_ADDR && be32(p, 6) === size, 20000, '0x47 开始');
       if (ack[1] !== 1) {
         throw new Error(`价签拒绝了这次写入（它解析到地址 0x${be32(ack, 2).toString(16)}、长度 ${be32(ack, 6)}）`);
       }
       if (be32(ack, 2) !== F.FONT_UPLOAD_ADDR || be32(ack, 6) !== size) {
-        throw new Error(`价签回显的地址/长度不对：0x${be32(ack, 2).toString(16)} / ${be32(ack, 6)}`);
+        throw new Error(`价签回显的地址/长度不对：0x${be32(ack, 2).toString(16)} / ${be32(ack, 6)}`
+          + `（期望 0x${F.FONT_UPLOAD_ADDR.toString(16)} / ${size}）`);
       }
       let sent = 0;
       for (let at = 0; at < size; at += payload) {
@@ -674,7 +679,9 @@
         }
       }
       status('fontStatus', '正在提交：价签会逐页回读比对，再算整包 CRC…');
-      const done = await ble.command(F.COMMIT_FRAME, (p) => p[0] === 0xC7 && p.length >= 7, 90000, '0x47 提交');
+      // A commit answer is always C7 + 7 payload bytes = 8 total; a begin echo is 10. Pinning the
+      // length keeps a stale begin echo from being read as the commit result.
+      const done = await ble.command(F.COMMIT_FRAME, (p) => p[0] === 0xC7 && p.length === 8, 90000, '0x47 提交');
       const got = be32(done, 2);
       const bad = be16(done, 5);
       if (done[1] !== 0 || got !== size || bad) {
@@ -719,17 +726,17 @@
   /* -------------------------------------------------------------- 控件状态 --- */
   function updateControls() {
     const connected = !!(link && link.connected);
-    $('fontConnect').hidden = connected;
-    $('fontConnect').disabled = uploading || !(link && link.canConnect);
-    $('fontDisconnect').hidden = !connected;
-    $('fontDisconnect').disabled = uploading || !connected;
-    $('fontUpload').disabled = uploading || generating || !blob || !connected;
+    const hasDevice = !!(link && link.hasDevice);
+    const label = link?.name || '';
+    $('fontUpload').disabled = uploading || generating || !blob || !hasDevice;
     $('fontBuild').disabled = generating || uploading;
-    $('fontLinkBadge').textContent = connected ? (link.name || 'ESL 价签') : '未连接';
+    $('fontLinkBadge').textContent = !hasDevice ? '未连接' : label + (connected ? ' · 传输中' : ' · 未连接');
     $('fontLinkBadge').classList.toggle('ble-connected', connected);
     const hint = link && !link.canConnect
       ? '蓝牙直连需要 HTTPS（或 localhost）和支持 Web Bluetooth 的 Chrome / Edge；生成字库不需要蓝牙。'
-      : '';
+      : !hasDevice
+        ? '先在右上角选价签，写入时才连接、写完自动断开。'
+        : '';
     $('fontSupport').hidden = !hint;
     $('fontSupport').textContent = hint;
   }
@@ -851,14 +858,9 @@
     });
     $('fontBuild').addEventListener('click', run(buildNow, 'fontBuildStatus'));
     $('fontDownload').addEventListener('click', download);
-    $('fontConnect').addEventListener('click', () => {
-      status('fontStatus', '');
-      return ble.connect((error) => status('fontStatus', error, 'bad'));
-    });
-    $('fontDisconnect').addEventListener('click', () => ble.disconnect());
     $('fontUpload').addEventListener('click', () => {
       status('fontStatus', '');
-      return ble.runBusy(upload, (error) => status('fontStatus', String((error && error.message) || error), 'bad'));
+      return ble.session(upload, (error) => status('fontStatus', String((error && error.message) || error), 'bad'));
     });
   }
 

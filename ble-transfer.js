@@ -1,4 +1,9 @@
-/* Ink Studio — Web Bluetooth image transfer. */
+/* Ink Studio — Web Bluetooth image transfer.
+ *
+ * The top-right dropdown owns device selection. Merely selecting (or reloading with a remembered
+ * device) never opens GATT: `session()` connects to the selected device just before a transfer,
+ * then releases it in `finally`. Idle pages have no active BLE link.
+ */
 (function () {
   'use strict';
 
@@ -12,7 +17,9 @@
   const linkListeners = new Set();
   const notifyListeners = new Set();
   class NotificationTimeout extends Error {}
-  let device = null;
+  let device = null;          // GATT link, non-null only inside a transfer session
+  let selected = null;        // device chosen in the top-right dropdown (no GATT connection yet)
+  let devices = [];           // remembered/granted devices, never opened on page load
   let commandChar = null;
   let responseChar = null;
   let connected = false;
@@ -45,6 +52,78 @@
     return !!(window.isSecureContext && navigator.bluetooth);
   }
 
+  // ------------------------------------------------------- top-right device picker
+  const SELECT_KEY = 'ink-studio-tag-id';
+  const tagId = (d) => d?.id || d?.name || '';
+  const deviceLabel = (d) => d?.name || 'ESL 价签';
+
+  function renderDevices() {
+    const box = $('tagSelect');
+    if (!box) return;
+    box.innerHTML = '';
+    const head = document.createElement('option');
+    head.value = '';
+    head.textContent = devices.length ? '选择价签…'
+      : canUseBluetooth() ? '未发现价签 · 点扫描' : '此浏览器不支持 BLE';
+    box.appendChild(head);
+    for (const d of devices) {
+      const option = document.createElement('option');
+      option.value = tagId(d);
+      option.textContent = deviceLabel(d) + (d.id ? ' · ' + d.id.slice(-6) : '');
+      box.appendChild(option);
+    }
+    box.value = selected ? tagId(selected) : '';
+    updateControls();
+  }
+
+  function rememberSelection() {
+    try { localStorage.setItem(SELECT_KEY, selected ? tagId(selected) : ''); } catch (e) { /* optional */ }
+  }
+
+  // getDevices() only returns devices this origin already has permission for. It opens no GATT
+  // link, so the remembered choice can be restored on load without connecting.
+  async function initDevices() {
+    if (!navigator.bluetooth?.getDevices) { renderDevices(); return; }
+    try {
+      devices = Array.from(await navigator.bluetooth.getDevices());
+      const saved = localStorage.getItem(SELECT_KEY);
+      selected = devices.find((d) => tagId(d) === saved) || null;
+    } catch (e) {
+      devices = [];
+      selected = null;
+    }
+    renderDevices();
+  }
+
+  async function scanDevices() {
+    if (!canUseBluetooth()) {
+      throw new Error('蓝牙直连需要 HTTPS / localhost 和支持 Web Bluetooth 的 Chrome、Edge');
+    }
+    // requestDevice only grants/returns the device; the GATT link stays closed until a transfer.
+    const fresh = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'ESL-' }, { services: [SERVICE] }],
+      optionalServices: [SERVICE],
+    });
+    if (!devices.some((d) => tagId(d) === tagId(fresh))) devices.push(fresh);
+    selected = fresh;
+    rememberSelection();
+    renderDevices();
+    setStatus('已选择 ' + deviceLabel(fresh) + '。传输时才连接，结束后自动断开。', 'good');
+  }
+
+  function chooseDevice(value) {
+    const next = devices.find((d) => tagId(d) === value) || null;
+    if (connected || busy || externalBusy) {
+      renderDevices();
+      setStatus('正在传输，传输结束后才能切换价签。', 'warn');
+      return;
+    }
+    selected = next;
+    rememberSelection();
+    updateControls();
+    setStatus(next ? '已选择 ' + deviceLabel(next) + '，传输时才连接。' : '未选择价签，请在右上角点“扫描”。', '');
+  }
+
   function panelMatches(spec, { w, h, colorMode }) {
     return spec && spec.w === w && spec.h === h && spec.mode === colorMode;
   }
@@ -68,20 +147,27 @@
   function updateControls() {
     const canConnect = canUseBluetooth();
     const blocked = busy || externalBusy;
-    $('bleConnect').hidden = connected;
-    $('bleConnect').disabled = blocked || connected || !canConnect;
-    $('bleDisconnect').hidden = !connected;
-    $('bleDisconnect').disabled = blocked || !connected;
-    $('bleSend').disabled = blocked || !connected || !!transferPlane ||
+    const hasDevice = !!selected;
+    const label = connected ? deviceLabel(device) : (hasDevice ? deviceLabel(selected) : '');
+    $('bleSend').disabled = blocked || !hasDevice || !!transferPlane ||
       !panelMatches(panel, lab.state) || lab.state.codes?.length !== lab.state.w * lab.state.h;
-    $('bleAbort').hidden = !connected || !transferPlane;
-    $('bleAbort').disabled = blocked || !connected || !transferPlane;
+    $('bleAbort').hidden = !hasDevice || busy;
+    $('bleAbort').disabled = blocked || !hasDevice;
+    const stateNode = $('tagState');
+    if (stateNode) {
+      stateNode.textContent = !hasDevice ? '未选择' : label + (connected ? ' · 传输中' : ' · 未连接');
+      stateNode.classList.toggle('ble-connected', connected);
+    }
+    $('bleLinkBadge').textContent = !hasDevice ? '未连接' : label + (connected ? ' · 传输中' : ' · 未连接');
+    $('bleLinkBadge').classList.toggle('ble-connected', connected);
 
-    let hint = '传图无需蓝牙配对或输入密钥。';
+    let hint = '无需配对；右上角选价签，传输时才连接、结束自动断开。';
     if (!window.isSecureContext) {
       hint = '蓝牙直连需要通过 HTTPS 或 localhost 打开。';
     } else if (!canConnect) {
       hint = '蓝牙直连可用桌面 Chrome / Edge 或 Android Chrome。';
+    } else if (!hasDevice) {
+      hint = '先在右上角点“扫描”选择价签；页面加载和空闲时不会连接蓝牙。';
     } else if (connected && panel) {
       hint = panelMatches(panel, lab.state)
         ? '设备规格：' + panelDescription(panel)
@@ -89,7 +175,8 @@
     }
     $('bleSupport').textContent = hint;
     $('bleSupport').hidden = !hint;
-    const state = { canConnect, connected, busy: blocked, transferPlane, panel, name: device?.name };
+    const state = { canConnect, connected, busy: blocked, transferPlane, panel,
+      name: label, hasDevice, tagKey: selected ? tagId(selected) : '' };
     for (const listener of Array.from(linkListeners)) {
       try { listener(state); } catch (error) { console.error(error); }
     }
@@ -362,17 +449,14 @@
       return;
     }
     const refreshMs = (refresh.packet[4] << 8) | refresh.packet[5];
-    releaseConnection();
-    setStatus('传图、Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。蓝牙已断开。', 'good');
+    setStatus('传图、Flash CRC32 回读校验和屏幕刷新均已完成（' + (refreshMs / 1000).toFixed(1) + ' 秒）。蓝牙已由页面自动断开。', 'good');
   }
 
   async function connect() {
     if (connected) return;
+    if (!selected) throw new Error('请先在页面右上角选择价签（点“扫描”添加）');
     if (!canUseBluetooth()) throw new Error('请在 HTTPS 页面和支持 Web Bluetooth 的 Chrome / Edge 中打开');
-    const link = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'ESL-' }, { services: [SERVICE] }],
-      optionalServices: [SERVICE],
-    });
+    const link = selected;
     device = link;
     link.addEventListener('gattserverdisconnected', onDisconnected);
     try {
@@ -384,8 +468,6 @@
       await responseChar.startNotifications();
       if (!link.gatt.connected) throw new Error('BLE 连接已断开');
       connected = true;
-      $('bleLinkBadge').textContent = link.name || 'ESL 价签';
-      $('bleLinkBadge').classList.add('ble-connected');
       $('bleProgress').hidden = true;
       updateControls();
       await queryStatus();
@@ -406,8 +488,6 @@
     responseChar = null;
     transferPlane = 0;
     panel = null;
-    $('bleLinkBadge').textContent = '未连接';
-    $('bleLinkBadge').classList.remove('ble-connected');
     if (refreshInProgress) {
       refreshDisconnected = true;
       if (refreshCompletionWaiter) refreshCompletionWaiter.finish({ disconnected: true }, null);
@@ -458,14 +538,37 @@
     }
   }
 
-  $('bleConnect').addEventListener('click', () => runBusy(connect));
-  $('bleDisconnect').addEventListener('click', () => runBusy(disconnect));
-  $('bleSend').addEventListener('click', () => runBusy(sendImage));
-  $('bleAbort').addEventListener('click', () => runBusy(abortTransfer));
+  // One data operation = one BLE link. `connect()` is otherwise never called by the UI.
+  async function session(action, onError = (message) => setStatus(message, 'bad')) {
+    if (busy || externalBusy) return;
+    busy = true;
+    updateControls();
+    try {
+      await connect();
+      await action();
+    } catch (error) {
+      if (device && !device.gatt.connected) onDisconnected();
+      onError(String((error && error.message) || error || '未知错误'));
+    } finally {
+      releaseConnection();
+      busy = false;
+      updateControls();
+    }
+  }
+
+  $('tagSelect').addEventListener('change', (event) => chooseDevice(event.target.value));
+  $('tagScan').addEventListener('click', () => {
+    scanDevices().catch((error) => {
+      if (error?.name !== 'NotFoundError') setStatus('扫描失败：' + error.message, 'bad');
+    });
+  });
+  $('bleSend').addEventListener('click', () => session(sendImage));
+  $('bleAbort').addEventListener('click', () => session(abortTransfer));
   window.addEventListener('bwr:render', updateControls);
   window.INK_BLE = {
-    connect: (onError) => runBusy(connect, onError),
-    disconnect: () => runBusy(disconnect),
+    // `connect`/`disconnect` are the low-level primitives used by session; callers should use
+    // `session` so no link is left open while the page is idle.
+    connect, disconnect, session,
     subscribe(listener) {
       linkListeners.add(listener);
       updateControls();
@@ -476,12 +579,15 @@
       return () => notifyListeners.delete(listener);
     },
     isConnected: () => connected,
-    deviceName: () => device?.name || '',
+    deviceName: () => (connected ? device?.name : selected?.name) || '',
+    selectedDevice: () => selected && { id: tagId(selected), name: deviceLabel(selected) },
+    scan: scanDevices,
     setBusy(value) {
       externalBusy = !!value;
       updateControls();
     },
     runBusy, command, writeWithResponse, queryMtu, requestCardRefresh, crc32,
   };
+  initDevices();
   updateControls();
 })();

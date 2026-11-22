@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5f5f9">
 <title>Ink Studio · 传图</title>
-<link rel="stylesheet" href="bwr.css?v=6">
+<link rel="stylesheet" href="bwr.css?v=7">
 </head>
 <body>
 <header class="topbar">
@@ -21,6 +21,12 @@
       <button class="app-tab" id="tabOta" data-tab="ota" role="tab" aria-selected="false" aria-controls="pageOta">OTA 工具</button>
     </nav>
     <div class="nav-actions">
+      <label class="device-pick" title="右上角统一选择价签：只在传输时连接，传完自动断开">
+        <span>价签</span>
+        <select id="tagSelect" aria-label="选择 BLE 价签"><option value="">未发现价签 · 点扫描</option></select>
+      </label>
+      <button class="btn sm ghost" id="tagScan" type="button" title="扫描并添加可用价签（不会建立 BLE 连接）">扫描</button>
+      <span class="badge device-state" id="tagState">未选择</span>
       <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
     </div>
   </div>
@@ -212,8 +218,6 @@
         <span class="badge" id="bleLinkBadge">未连接</span>
       </div>
       <div class="ble-actions">
-        <button class="btn ghost" id="bleConnect" type="button">连接价签</button>
-        <button class="btn ghost" id="bleDisconnect" type="button" hidden>断开</button>
         <button class="btn primary" id="bleSend" type="button" disabled>发送并刷新</button>
         <button class="btn ghost" id="bleAbort" type="button" hidden>中止未完成传输</button>
       </div>
@@ -394,6 +398,7 @@
         </div>
         <select id="cardLocations" aria-label="城市搜索结果" hidden></select>
         <p class="hint" id="cardLocation"></p>
+        <p class="hint" id="cardCfgHint" hidden></p>
         <details class="card-coordinates" id="cardCoords">
           <summary>自定义坐标和屏上城市名</summary>
           <div class="card-row">
@@ -429,12 +434,10 @@
       </div>
       <p class="hint" id="cardTextHint" hidden>用 <code>#r文字#e</code> 标红。价签按本机同步的日期在零点更新。</p>
     </fieldset>
-    <section class="card-device" aria-label="蓝牙直连">
+    <section class="card-device" aria-label="BLE 价签（按需连接）">
       <div class="ble-header"><span class="badge" id="cardLink">未连接</span></div>
       <p class="hint" id="cardLinkHint"></p>
       <div class="ble-actions">
-        <button class="btn ghost" id="cardConnect" type="button">连接价签</button>
-        <button class="btn ghost" id="cardDisconnect" type="button" hidden>断开</button>
         <button class="btn ghost" id="cardRead" type="button" disabled>读价签状态</button>
         <button class="btn ghost" id="cardQuoteNext" type="button" hidden disabled>看下一条</button>
         <button class="btn primary" id="cardPush" type="button" disabled>推送卡片并刷新</button>
@@ -506,14 +509,12 @@
     <section class="ota-panel">
       <h2>5. 写进价签</h2>
       <div class="ble-actions">
-        <button class="btn ghost" id="fontConnect" type="button">连接价签</button>
-        <button class="btn ghost" id="fontDisconnect" type="button" hidden>断开</button>
         <button class="btn primary" id="fontUpload" type="button" disabled>写入 U5</button>
       </div>
       <p class="ble-support" id="fontSupport" hidden></p>
       <progress id="fontProgress" max="1" value="0" hidden></progress>
       <p class="ble-status" id="fontStatus" role="status" hidden></p>
-      <p class="hint">写完必须<strong>断电重启</strong>价签：字库只在开机那一次加载（<code>pak_init_u5</code>）。上传前请确认价签没在刷屏。</p>
+      <p class="hint">在右上角下拉框选价签，写入时自动连接、结束自动断开。写完必须<strong>断电重启</strong>价签：字库只在开机那一次加载（<code>pak_init_u5</code>）。上传前请确认价签没在刷屏。</p>
     </section>
   </div>
 </section>
@@ -529,15 +530,13 @@
 
   <div class="ota-grid">
     <section class="ota-panel">
-      <h2>1. 连接价签</h2>
+      <h2>1. 价签状态</h2>
       <div class="ble-actions">
-        <button class="btn ghost" id="otaConnect" type="button">连接价签</button>
-        <button class="btn ghost" id="otaDisconnect" type="button" hidden>断开</button>
         <button class="btn" id="otaRead" type="button" disabled>读取 OTA 状态</button>
       </div>
       <p class="ble-support" id="otaSupport" hidden></p>
       <div class="ota-kv" id="otaState">
-        <div><span>连接后读取</span><b>—</b></div>
+        <div><span>读取后显示</span><b>—</b></div>
       </div>
       <div class="ble-actions">
         <button class="btn sm ghost" id="otaSelftest" type="button" disabled>验签自检</button>
@@ -565,11 +564,11 @@
   <section class="ota-panel ota-help">
     <h2>升级流程与注意</h2>
     <ol class="ota-steps">
-      <li>连接价签，先读一次 OTA 状态，确认“在跑槽”的 seq。</li>
+      <li>在右上角选价签，点“读取 OTA 状态”（临时连接、读完断开），确认“在跑槽”的 seq。</li>
       <li>选择 <code>.eslfw</code>。页面会本地校验 CRC32、SHA-256 和 ECDSA P-256 签名，并检查 seq 是否不低于价签在跑的版本。</li>
       <li>下发时按 <code>0x20 → 0x21… → 0x22</code> 写入备用槽。0x22 需要 ATT MTU 至少 101。</li>
       <li>价签回读 Flash、验签、保存回滚副本并切槽，然后自动重启。约 1–2 分钟，期间不要断电。</li>
-      <li>重启后重新连接，读 OTA 状态确认 <code>seq_active</code> 已变成新包的 seq。</li>
+      <li>重启后再读一次 OTA 状态，确认 <code>seq_active</code> 已变成新包的 seq。</li>
     </ol>
     <pre class="ota-log" id="otaLog">就绪。</pre>
   </section>
@@ -581,12 +580,12 @@
 <script src="core.js"></script>
 <script src="panels.js"></script>
 <script src="app.js?v=6"></script>
-<script src="ble-transfer.js?v=5"></script>
-<script src="cards.js?v=3"></script>
+<script src="ble-transfer.js?v=6"></script>
+<script src="cards.js?v=4"></script>
 <script src="ota-core.js"></script>
-<script src="ota.js?v=1"></script>
+<script src="ota.js?v=2"></script>
 <script src="fontpack.js?v=2"></script>
-<script src="fonts.js?v=2"></script>
+<script src="fonts.js?v=3"></script>
 <script src="tabs.js?v=2"></script>
 </body>
 </html>

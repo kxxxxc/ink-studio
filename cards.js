@@ -4,6 +4,10 @@
 
   const $ = (id) => document.getElementById(id);
   const ble = window.INK_BLE;
+  // The gateway serves this page together with the 高级设置 tab; the standalone studio has neither
+  // that tab nor /api/card/cfg. Detect the shell statically (tabs.js loads after this file).
+  const gatewayUI = !!document.getElementById('pageAdvanced') || document.body.classList.contains('studio-five');
+  const CONFIG_HEAD = { 'X-Prism-Config': '1' };
   const modeNames = ['', '月历', '日历 + 天气', '五天天气', '倒计时', '每日一言'];
   const settingsIds = ['cardMode', 'cardWeek', 'cardLat', 'cardLon', 'cardCity',
     'cardCdTitle', 'cardCdDate', 'cardCdBody', 'cardQuoteRows'];
@@ -38,6 +42,7 @@
   const holidayCache = new Map();
   let link, loading = false, results = [];
   let forecast = null;
+  let cfgLoaded = false, cfgBusy = null, applyingCfg = false, locationDirty = false, saveTimer = 0;
 
   function status(message, kind = '') {
     const node = $('cardStatus');
@@ -55,19 +60,18 @@
     if (!link) return;
     const blocked = link.busy || loading;
     const capable = link.connected && supportsCards();
+    const hasDevice = !!link.hasDevice;
+    const label = link.name || '';
     $('cardFields').disabled = blocked;
-    $('cardConnect').hidden = link.connected;
-    $('cardConnect').disabled = blocked || !link.canConnect;
-    $('cardDisconnect').hidden = !link.connected;
-    $('cardDisconnect').disabled = blocked;
-    $('cardRead').disabled = blocked || !capable;
+    $('cardRead').disabled = blocked || !hasDevice;
     $('cardPush').disabled = blocked || !capable || !!link.transferPlane;
     $('cardQuoteNext').hidden = cardMode() !== 5;
     $('cardQuoteNext').disabled = $('cardPush').disabled;
-    $('cardLink').textContent = link.connected ? (link.name || 'ESL 价签') : '未连接';
+    $('cardLink').textContent = !hasDevice ? '未连接' : label + (link.connected ? ' · 传输中' : ' · 未连接');
     $('cardLink').classList.toggle('ble-connected', link.connected);
-    let hint = '';
+    let hint = '选价签后点按钮即临时连接，结束自动断开。';
     if (!link.canConnect) hint = '蓝牙直连需要 HTTPS 和支持 Web Bluetooth 的 Chrome 或 Edge。';
+    else if (!hasDevice) hint = '请先在右上角选择价签；空闲时不会连接。';
     else if (link.connected && !capable) hint = '这些卡片需要支持本机渲染的 800 × 480 黑白红价签。';
     else if (link.transferPlane) hint = '价签正在接收图片，请先完成或中止传图。';
     $('cardLinkHint').textContent = hint;
@@ -145,7 +149,12 @@
   }
 
   async function getJson(url, signal = AbortSignal.timeout(8000)) {
-    const r = await fetch(url, { signal });
+    /* no-store: the weather fetch is the one response a stale HTTP-cache entry must never win.
+     * It was served from the browser cache across the midnight boundary, so weatherPacket()
+     * saw yesterday's `current.time` and threw "天气日期与本机日期不一致" - the push never
+     * reached the tag and the panel stayed on the previous day no matter how often it was
+     * pressed. The 5 min in-memory `forecast` cache above is the only reuse we want. */
+    const r = await fetch(url, { signal, cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
@@ -167,6 +176,76 @@
     return { lat, lon, city: $('cardCity').value.trim() };
   }
 
+  // 高级设置（/api/card/cfg）是网关上唯一的天气位置。卡片页首次打开就从那里取值，
+  // 本页改城市/坐标则写回去，两个页签永远看到同一份配置；非网关版照旧只用 localStorage。
+  function queueGatewaySave() {
+    if (!gatewayUI || !cfgLoaded || applyingCfg) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { void saveGatewayLocation(); }, 400);
+  }
+
+  async function saveGatewayLocation() {
+    if (!gatewayUI || !cfgLoaded || applyingCfg) return;
+    let place;
+    try { place = location(); } catch { return; }
+    const body = new URLSearchParams({
+      city: place.city || '北京', lat: String(place.lat), lon: String(place.lon),
+    });
+    try {
+      const r = await fetch('/api/card/cfg', { method: 'POST', headers: CONFIG_HEAD, body });
+      let j = {};
+      try { j = await r.json(); } catch { /* the gateway always answers JSON */ }
+      if (!r.ok || !j.ok) throw new Error((j && (j.error || j.err)) || 'HTTP ' + r.status);
+      window.dispatchEvent(new CustomEvent('ink:cardcfg', { detail: { ...j, source: 'cards' } }));
+    } catch (error) {
+      $('cardWeatherStatus').textContent = '本页位置已改，但没同步到高级设置：' + error.message;
+    }
+  }
+
+  function applyGatewayCfg(cfg, force = false) {
+    if (!cfg || cfg.ok === false) return false;
+    const lat = Number(cfg.lat), lon = Number(cfg.lon);
+    if (!Number.isFinite(lat) || Math.abs(lat) > 85 || !Number.isFinite(lon) || Math.abs(lon) > 180) return false;
+    // 用户正在本页改坐标时，别用一次后台读取覆盖他的输入；改完会写回网关。
+    if (locationDirty && !force) return false;
+    const city = String(cfg.city || '');
+    applyingCfg = true;
+    $('cardLat').value = lat.toFixed(4);
+    $('cardLon').value = lon.toFixed(4);
+    $('cardCity').value = city;
+    $('cardCitySearch').value = city;
+    applyingCfg = false;
+    locationChanged({ save: false });
+    const label = shortCity(city);
+    $('cardLocation').textContent = `${lat.toFixed(4)}, ${lon.toFixed(4)}` +
+      (label ? ' · 屏上显示 ' + label : '') + ' · 来自高级设置';
+    $('cardWeatherStatus').textContent = '已采用高级设置的天气位置' + (city ? '：' + city : '');
+    return true;
+  }
+
+  async function ensureGatewayCfg(force = false) {
+    if (!gatewayUI) return false;
+    if (!force && cfgLoaded) return true;
+    if (cfgBusy) return cfgBusy;
+    cfgBusy = (async () => {
+      try {
+        const r = await fetch('/api/card/cfg', { cache: 'no-store', headers: CONFIG_HEAD });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.err || 'bad config');
+        cfgLoaded = true;
+        if (!applyGatewayCfg(j) && locationDirty) queueGatewaySave();
+        return true;
+      } catch (error) {
+        if (!cfgLoaded) $('cardWeatherStatus').textContent = '读取网关天气位置失败：' + error.message;
+        return false;
+      } finally {
+        cfgBusy = null;
+      }
+    })();
+    return cfgBusy;
+  }
+
   function shortCity(city) {
     let label = '';
     for (const character of city) {
@@ -176,7 +255,7 @@
     return label;
   }
 
-  function locationChanged() {
+  function locationChanged(options = {}) {
     forecast = null;
     $('cardWeatherStatus').textContent = '';
     try {
@@ -185,6 +264,7 @@
       $('cardLocation').textContent = `${lat.toFixed(4)}, ${lon.toFixed(4)}${label ? ' · 屏上显示 ' + label : ''}`;
     } catch { $('cardLocation').textContent = '尚未选择天气位置'; }
     persist();
+    if (options.save !== false) queueGatewaySave();
   }
 
   async function searchCities() {
@@ -247,7 +327,17 @@
       const i = hourly.time.indexOf(`${today}T${pad(hour)}:00`);
       packet.push(temp(hourly.temperature_2m[i] ?? current.temperature_2m), percent(hourly.precipitation_probability[i]));
     }
-    if (packet.length !== 2 + days * 12 + 9 + 48 || packet.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
+    /* 0.6.6: an optional second 24 h block for tomorrow. The tag shifts it into the 24 h curve at
+     * the midnight roll, so a hand-pushed card keeps its chart until the next push (the
+     * auto-sync's 48 h window already did this). Older tags ignore the trailing bytes. */
+    const next = new Date(today + 'T12:00:00');
+    next.setDate(next.getDate() + 1);
+    const tomorrow = dateKey(next);
+    for (let hour = 0; hour < 24; hour++) {
+      const i = hourly.time.indexOf(`${tomorrow}T${pad(hour)}:00`);
+      packet.push(temp(hourly.temperature_2m[i] ?? current.temperature_2m), percent(hourly.precipitation_probability[i]));
+    }
+    if (packet.length !== 2 + days * 12 + 9 + 96 || packet.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
       throw new Error('天气字段格式错误');
     }
     return packet;
@@ -347,7 +437,10 @@
   }
 
   async function sendRest(year, rows, payload) {
-    await setFrame([0x40, ...le16(year), rows.length], 0xc0, 2, '开始同步调休');
+    // Since tag 0.6.3 the 0x40 answer is C0 <ok> <have>: have=1 means the tag already holds
+    // exactly this table (matched by CRC), so rows and the 0x42 commit can be skipped.
+    const start = await setFrame([0x40, ...le16(year), rows.length], 0xc0, 3, '开始同步调休');
+    if (start[2] === 1) return;
     const batch = Math.floor((payload - 1) / 3);
     for (let i = 0; i < rows.length; i += batch) {
       await ble.writeWithResponse(Uint8Array.from([0x41, ...rows.slice(i, i + batch).flat()]));
@@ -390,6 +483,7 @@
   }
 
   async function pushCard() {
+    await ensureGatewayCfg();
     const mode = cardMode();
     const week = mode <= 2 ? Number($('cardWeek').value) : 0;
     const countdown = mode === 4 ? countdownPacket() : null;
@@ -457,10 +551,9 @@
     await refreshCard(`已切换至第 ${p[2] + 1}/${p[1]} 条一言。`);
   }
 
-  const run = (action) => ble.runBusy(async () => { status(''); await action(); }, (error) => status(error, 'bad'));
+  // Every card operation is a session: connect on demand, disconnect in the transport's finally.
+  const run = (action) => ble.session(async () => { status(''); await action(); }, (error) => status(error, 'bad'));
   const search = () => inputTask(searchCities, 'cardWeatherStatus');
-  $('cardConnect').addEventListener('click', () => { status(''); return ble.connect((error) => status(error, 'bad')); });
-  $('cardDisconnect').addEventListener('click', () => { status(''); return ble.disconnect(); });
   $('cardPush').addEventListener('click', () => run(pushCard));
   $('cardRead').addEventListener('click', () => run(showCardStatus));
   $('cardQuoteNext').addEventListener('click', () => run(nextQuote));
@@ -469,12 +562,16 @@
   $('cardLocations').addEventListener('change', (e) => {
     const place = results[e.target.value];
     if (!place) return;
+    locationDirty = true;
     $('cardLat').value = place.latitude;
     $('cardLon').value = place.longitude;
     $('cardCity').value = place.name;
     locationChanged();
   });
-  $('cardFetchWeather').addEventListener('click', () => inputTask(() => fetchWeather(location()), 'cardWeatherStatus'));
+  $('cardFetchWeather').addEventListener('click', () => inputTask(async () => {
+    await ensureGatewayCfg();
+    return fetchWeather(location());
+  }, 'cardWeatherStatus'));
   $('cardQuoteFetch').addEventListener('click', () => inputTask(fetchQuotes, 'cardQuoteStatus'));
   $('cardQuoteDemo').addEventListener('click', () => {
     $('cardQuoteRows').value = demoQuotes.join('\n');
@@ -484,15 +581,29 @@
   });
   for (const id of settingsIds) {
     const onEdit = () => {
-      if (['cardLat', 'cardLon', 'cardCity'].includes(id)) locationChanged();
-      else { updateForm(); persist(); }
+      if (['cardLat', 'cardLon', 'cardCity'].includes(id)) {
+        locationDirty = true;
+        locationChanged();
+      } else { updateForm(); persist(); }
     };
     /* select 在部分浏览器/辅助技术上只发 change 不发 input，所以两个都听。 */
     $(id).addEventListener('input', onEdit);
     $(id).addEventListener('change', onEdit);
   }
+  $('cardCfgHint').hidden = !gatewayUI;
+  if (gatewayUI) $('cardCfgHint').textContent = '默认沿用高级设置里的城市和坐标；在这里修改会自动同步回高级设置。';
+  window.addEventListener('ink:tab', (event) => {
+    if (event.detail?.tab === 'cards') void ensureGatewayCfg(true);
+  });
+  window.addEventListener('ink:cardcfg', (event) => {
+    const cfg = event.detail;
+    if (!gatewayUI || !cfg || cfg.source === 'cards') return;
+    cfgLoaded = true;
+    applyGatewayCfg(cfg, true);
+  });
   restore();
   locationChanged();
+  void ensureGatewayCfg();
   ble.subscribe((state) => { link = state; updateControls(); });
   updateForm();
 })();

@@ -61,7 +61,22 @@ code {
 }
 body.debug-mode .nav-shell { max-width: 1600px; }
 .brand { display: flex; align-items: center; gap: 11px; }
-.nav-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.nav-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
+/* Right-corner BLE device picker shared by both pages. Selection is passive; the transport
+   only opens GATT when a transfer starts and releases it when the transfer ends. */
+.device-pick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.device-pick > span { flex: none; white-space: nowrap; }
+/* The gateway page has one extra tab; give the nav bar a little more room so its brand and
+   debug button never wrap above the dropdown. */
+body.studio-five .nav-shell { max-width: 1120px; }
+body.studio-five .brand, body.studio-five .nav-debug { white-space: nowrap; flex: none; }
+body.studio-five .nav-actions { flex: none; }
+body.studio-five .app-tab { padding-inline: 9px; font-size: 12.5px; }
+.device-pick select {
+  width: 172px; min-width: 0; height: 36px; border-radius: 999px;
+  background-color: var(--panel); font-size: 11.5px; font-weight: 600;
+}
+.device-state.ble-connected { border-color: var(--accent); color: var(--accent-hover); background: var(--accent-soft); }
 .brand strong { font-size: 16px; font-weight: 700; letter-spacing: -0.025em; }
 .brand-mark {
   width: 32px;
@@ -1093,6 +1108,8 @@ input[type="checkbox"] {
   .nav-shell { flex-wrap: wrap; padding-block: 8px; }
   .brand { order: 1; }
   .nav-actions { order: 2; margin-left: auto; }
+  .device-pick select { width: 148px; }
+  .device-state { display: none; }
   .app-tabs { order: 3; width: 100%; }
   .app-tab { flex: 1; padding-inline: 8px; }
   .page-card { padding: 24px 14px 30px; }
@@ -1107,6 +1124,9 @@ input[type="checkbox"] {
 }
 @media (max-width: 600px) {
   .nav-shell { min-height: 58px; padding-inline: 16px; }
+  .nav-actions { width: 100%; }
+  .device-pick { flex: 1 1 150px; }
+  .device-pick select { width: 100%; }
   .card-dialog { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
   .app { padding: 24px 14px 26px; }
   .app.is-debug { grid-template-areas: "workspace" "settings" "details"; grid-template-columns: minmax(0, 1fr); }
