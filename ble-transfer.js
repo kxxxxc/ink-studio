@@ -9,12 +9,15 @@
   const RSP = '0000a002-0000-1000-8000-00805f9b34fb';
   const WIRE_MODES = [null, 'bw', 'bwr', 'bwy', 'gray4', 'seven'];
   const waiters = new Set();
+  const linkListeners = new Set();
+  const notifyListeners = new Set();
   class NotificationTimeout extends Error {}
   let device = null;
   let commandChar = null;
   let responseChar = null;
   let connected = false;
   let busy = false;
+  let externalBusy = false;
   let transferPlane = 0;
   let panel = null;
   let token = 0;
@@ -22,7 +25,6 @@
   let refreshAccepted = false;
   let refreshDisconnected = false;
   let refreshCompletionWaiter = null;
-  let linkListener;
 
   function setStatus(message, kind) {
     const node = $('bleStatus');
@@ -65,14 +67,15 @@
 
   function updateControls() {
     const canConnect = canUseBluetooth();
+    const blocked = busy || externalBusy;
     $('bleConnect').hidden = connected;
-    $('bleConnect').disabled = busy || connected || !canConnect;
+    $('bleConnect').disabled = blocked || connected || !canConnect;
     $('bleDisconnect').hidden = !connected;
-    $('bleDisconnect').disabled = busy || !connected;
-    $('bleSend').disabled = busy || !connected || !!transferPlane ||
+    $('bleDisconnect').disabled = blocked || !connected;
+    $('bleSend').disabled = blocked || !connected || !!transferPlane ||
       !panelMatches(panel, lab.state) || lab.state.codes?.length !== lab.state.w * lab.state.h;
     $('bleAbort').hidden = !connected || !transferPlane;
-    $('bleAbort').disabled = busy || !connected || !transferPlane;
+    $('bleAbort').disabled = blocked || !connected || !transferPlane;
 
     let hint = '传图无需蓝牙配对或输入密钥。';
     if (!window.isSecureContext) {
@@ -86,7 +89,10 @@
     }
     $('bleSupport').textContent = hint;
     $('bleSupport').hidden = !hint;
-    linkListener?.({ canConnect, connected, busy, transferPlane, panel, name: device?.name });
+    const state = { canConnect, connected, busy: blocked, transferPlane, panel, name: device?.name };
+    for (const listener of Array.from(linkListeners)) {
+      try { listener(state); } catch (error) { console.error(error); }
+    }
   }
 
   function u32le(bytes, offset) {
@@ -148,6 +154,9 @@
       } catch (error) {
         waiter.finish(null, error);
       }
+    }
+    for (const listener of Array.from(notifyListeners)) {
+      try { listener(packet); } catch (error) { console.error(error); }
     }
   }
 
@@ -355,6 +364,7 @@
   }
 
   async function connect() {
+    if (connected) return;
     if (!canUseBluetooth()) throw new Error('请在 HTTPS 页面和支持 Web Bluetooth 的 Chrome / Edge 中打开');
     const link = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: 'ESL-' }, { services: [SERVICE] }],
@@ -429,7 +439,7 @@
   }
 
   async function runBusy(action, onError = (message) => setStatus(message, 'bad')) {
-    if (busy) return;
+    if (busy || externalBusy) return;
     busy = true;
     updateControls();
     try {
@@ -454,7 +464,18 @@
     connect: (onError) => runBusy(connect, onError),
     disconnect: () => runBusy(disconnect),
     subscribe(listener) {
-      linkListener = listener;
+      linkListeners.add(listener);
+      updateControls();
+      return () => linkListeners.delete(listener);
+    },
+    onNotify(listener) {
+      notifyListeners.add(listener);
+      return () => notifyListeners.delete(listener);
+    },
+    isConnected: () => connected,
+    deviceName: () => device?.name || '',
+    setBusy(value) {
+      externalBusy = !!value;
       updateControls();
     },
     runBusy, command, writeWithResponse, queryMtu, requestCardRefresh, crc32,

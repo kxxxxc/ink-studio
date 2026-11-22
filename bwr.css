@@ -828,6 +828,148 @@ input[type="checkbox"] {
 .ble-status.good { color: #086747; }
 .ble-status.warn { color: #875900; }
 
+/* --------------------------------------------------------------- top tabs */
+.app-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #ececf3;
+  flex: none;
+}
+.app-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  padding: 8px 15px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.app-tab:hover { color: var(--text); }
+.app-tab.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 5px rgba(27, 38, 76, 0.12);
+}
+
+/* --------------------------------------------------------------- tab pages */
+.page-card {
+  max-width: 1040px;
+  margin-inline: auto;
+  padding: 34px 24px 42px;
+  animation: studio-enter 440ms cubic-bezier(.2, .8, .25, 1) both;
+}
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.page-head h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 720;
+  letter-spacing: -0.03em;
+}
+.page-lead {
+  max-width: 720px;
+  margin: 6px 0 0;
+  color: var(--dim);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+#pageCards { max-width: 760px; }
+#pageCards .card-body {
+  max-width: none;
+  margin-inline: 0;
+}
+.page-card .card-body {
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 14px 34px -28px rgba(27, 38, 76, 0.3);
+}
+#cardPageBadge.ble-connected { color: #096747; background: #e9f7ef; }
+
+/* --------------------------------------------------------------- OTA tab */
+.ota-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.ota-panel {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 14px 34px -28px rgba(27, 38, 76, 0.3);
+}
+.ota-panel h2 {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.ota-help { margin-top: 16px; }
+.ota-kv { display: grid; gap: 6px; font-size: 13px; }
+.ota-kv > div {
+  display: grid;
+  grid-template-columns: 8.5em minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.ota-kv span { color: var(--dim); }
+.ota-kv b { font-weight: 600; overflow-wrap: anywhere; }
+.ota-kv b.mono { font-family: var(--mono); font-size: 11px; }
+.ota-kv b.good { color: #086747; }
+.ota-kv b.bad { color: #a32432; }
+.ota-file { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.ota-file input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px dashed var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 13px;
+}
+.ota-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.ota-log {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f5f6f9;
+  color: #33394a;
+  font: 11.5px/1.55 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#otaProgress { width: 100%; height: 8px; accent-color: var(--accent); }
+#otaLinkBadge.ble-connected { color: #096747; background: #e9f7ef; }
+
 .card-dialog {
   width: min(560px, calc(100% - 24px));
   max-height: calc(100dvh - 24px);
@@ -888,6 +1030,16 @@ input[type="checkbox"] {
     max-width: 860px;
   }
   .side { max-height: none; }
+}
+@media (max-width: 760px) {
+  .nav-shell { flex-wrap: wrap; padding-block: 8px; }
+  .brand { order: 1; }
+  .nav-actions { order: 2; margin-left: auto; }
+  .app-tabs { order: 3; width: 100%; }
+  .app-tab { flex: 1; padding-inline: 8px; }
+  .page-card { padding: 24px 14px 30px; }
+  .page-head h1 { font-size: 25px; }
+  .ota-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 600px) {
   .nav-shell { min-height: 58px; padding-inline: 16px; }

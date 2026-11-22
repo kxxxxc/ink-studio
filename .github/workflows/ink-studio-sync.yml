@@ -1,0 +1,76 @@
+name: Sync Ink Studio from Gitee
+
+# This workflow lives in the GitHub Pages repository (kxxxxc/ink-studio).
+# Gitee cannot serve Pages, so Gitee stays the source of truth and this job
+# copies tools/bwr-studio into the root of new-branch on a schedule.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ink-studio-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the Pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: new-branch
+          fetch-depth: 0
+
+      - name: Pull tools/bwr-studio from Gitee
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/ink-src
+          for attempt in 1 2 3; do
+            if git clone --depth 1 --filter=blob:none --sparse \
+                https://gitee.com/kang-chao/eink-0213-rf.git /tmp/ink-src; then
+              break
+            fi
+            echo "Gitee clone failed (attempt $attempt), retrying..."
+            sleep 10
+          done
+          cd /tmp/ink-src
+          git sparse-checkout set tools/bwr-studio
+          cd "$GITHUB_WORKSPACE"
+          for file in \
+            index.html bwr.css core.js panels.js app.js ble-transfer.js \
+            cards.js ota-core.js ota.js tabs.js .nojekyll README.md; do
+            cp "/tmp/ink-src/tools/bwr-studio/$file" .
+          done
+
+      - name: Commit and push if the site changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(index.html bwr.css core.js panels.js app.js ble-transfer.js \
+            cards.js ota-core.js ota.js tabs.js .nojekyll README.md)
+          git add -- "${files[@]}"
+          if git diff --cached --quiet; then
+            echo "Ink Studio is already up to date."
+            exit 0
+          fi
+          source_sha=$(git -C /tmp/ink-src rev-parse --short HEAD)
+          git config user.name "ink-studio-sync"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "Sync Ink Studio from Gitee ${source_sha}"
+          git push origin HEAD:new-branch
+
+      - name: Request a Pages rebuild
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds"

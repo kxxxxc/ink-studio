@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5f5f9">
 <title>Ink Studio · 墨水屏传图</title>
-<link rel="stylesheet" href="bwr.css?v=3">
+<link rel="stylesheet" href="bwr.css?v=4">
 </head>
 <body>
 <header class="topbar">
@@ -14,8 +14,12 @@
       <span class="brand-mark" aria-hidden="true"><i class="k"></i><i class="w"></i><i class="r"></i></span>
       <strong>Ink Studio</strong>
     </div>
+    <nav class="app-tabs" role="tablist" aria-label="工具">
+      <button class="app-tab active" id="tabImage" data-tab="image" role="tab" aria-selected="true" aria-controls="app">传图工具</button>
+      <button class="app-tab" id="tabCards" data-tab="cards" role="tab" aria-selected="false" aria-controls="pageCards">模式卡片</button>
+      <button class="app-tab" id="tabOta" data-tab="ota" role="tab" aria-selected="false" aria-controls="pageOta">OTA 工具</button>
+    </nav>
     <div class="nav-actions">
-      <button class="btn nav-debug" id="cardOpen" type="button" aria-haspopup="dialog" aria-controls="cardDialog">价签卡片</button>
       <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
     </div>
   </div>
@@ -354,11 +358,13 @@
   </aside>
 </main>
 
-<dialog class="card-dialog" id="cardDialog" aria-labelledby="cardTitle">
-  <header class="card-header">
-    <h2 id="cardTitle">价签卡片</h2>
-    <button class="btn ghost" id="cardClose" type="button" autofocus>关闭</button>
-  </header>
+<section class="page-card" id="pageCards" hidden>
+  <div class="page-head">
+    <div>
+      <h1>模式卡片</h1>
+      <p class="page-lead">选一种版式，把月历、天气、倒计时或每日一言直接推到 800 × 480 黑白红价签。配置保存在当前浏览器。</p>
+    </div>
+  </div>
   <div class="card-body">
     <fieldset class="card-fields" id="cardFields">
       <label>版式
@@ -403,7 +409,7 @@
         <p class="hint" id="cardCdNote"></p>
       </div>
       <div class="card-fields" id="cardQuotes" hidden>
-        <label>每天一条，最多 7 条。每行填「正文 | 出处」。
+        <label>每天一条，最多 255 条、整包 16 KB。每行填「正文 | 出处」。
           <textarea id="cardQuoteRows" rows="6" placeholder="海内存知己，天涯若比邻。 | 王勃"></textarea>
         </label>
         <div class="ble-actions">
@@ -428,7 +434,64 @@
       <p class="ble-status" id="cardStatus" role="status" hidden></p>
     </section>
   </div>
-</dialog>
+</section>
+
+<section class="page-card" id="pageOta" hidden>
+  <div class="page-head">
+    <div>
+      <h1>OTA 工具</h1>
+      <p class="page-lead">用 Web Bluetooth 直连价签升级固件。先在本地校验 CRC32、SHA-256 和 ECDSA 签名，再写入价签的备用槽；价签验签通过后自己切槽并重启。</p>
+    </div>
+    <span class="badge" id="otaLinkBadge">未连接</span>
+  </div>
+
+  <div class="ota-grid">
+    <section class="ota-panel">
+      <h2>1. 连接价签</h2>
+      <div class="ble-actions">
+        <button class="btn ghost" id="otaConnect" type="button">连接价签</button>
+        <button class="btn ghost" id="otaDisconnect" type="button" hidden>断开</button>
+        <button class="btn" id="otaRead" type="button" disabled>读取 OTA 状态</button>
+      </div>
+      <p class="ble-support" id="otaSupport" hidden></p>
+      <div class="ota-kv" id="otaState">
+        <div><span>连接后读取</span><b>—</b></div>
+      </div>
+      <div class="ble-actions">
+        <button class="btn sm ghost" id="otaSelftest" type="button" disabled>验签自检</button>
+        <button class="btn sm ghost" id="otaAbort" type="button" disabled>放弃未完成传输</button>
+      </div>
+    </section>
+
+    <section class="ota-panel">
+      <h2>2. 固件包</h2>
+      <label class="ota-file">选择 .eslfw 文件
+        <input type="file" id="otaFile" accept=".eslfw,application/octet-stream">
+      </label>
+      <div class="ota-kv" id="otaPkg">
+        <div><span>固件包</span><b>尚未选择</b></div>
+      </div>
+      <div class="ble-actions">
+        <button class="btn" id="otaVerify" type="button" disabled>本地验签</button>
+        <button class="btn primary" id="otaUpload" type="button" disabled>下发并升级</button>
+      </div>
+      <progress id="otaProgress" max="1" value="0" hidden></progress>
+      <p class="ble-status" id="otaStatus" role="status" hidden></p>
+    </section>
+  </div>
+
+  <section class="ota-panel ota-help">
+    <h2>升级流程与注意</h2>
+    <ol class="ota-steps">
+      <li>连接价签，先读一次 OTA 状态，确认“在跑槽”的 seq。</li>
+      <li>选择 <code>.eslfw</code>。页面会本地校验 CRC32、SHA-256 和 ECDSA P-256 签名，并检查 seq 是否不低于价签在跑的版本。</li>
+      <li>下发时按 <code>0x20 → 0x21… → 0x22</code> 写入备用槽。0x22 需要 ATT MTU 至少 101。</li>
+      <li>价签回读 Flash、验签、保存回滚副本并切槽，然后自动重启。约 1–2 分钟，期间不要断电。</li>
+      <li>重启后重新连接，读 OTA 状态确认 <code>seq_active</code> 已变成新包的 seq。</li>
+    </ol>
+    <pre class="ota-log" id="otaLog">就绪。</pre>
+  </section>
+</section>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <pre id="selftest" hidden></pre>
@@ -436,7 +499,10 @@
 <script src="core.js"></script>
 <script src="panels.js"></script>
 <script src="app.js"></script>
-<script src="ble-transfer.js?v=3"></script>
-<script src="cards.js?v=1"></script>
+<script src="ble-transfer.js?v=4"></script>
+<script src="cards.js?v=2"></script>
+<script src="ota-core.js"></script>
+<script src="ota.js?v=1"></script>
+<script src="tabs.js?v=1"></script>
 </body>
 </html>

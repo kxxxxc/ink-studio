@@ -1,12 +1,18 @@
-# Ink Studio · 墨水屏传图与价签卡片
+# Ink Studio · 传图、卡片与 OTA
 
 [打开 Ink Studio](https://kxxxxc.github.io/ink-studio/)
 
-在浏览器里排版图片、文字与手写图层，并转换为墨水屏位图。可直接打开 `index.html` 离线编辑和导出。蓝牙直传需要通过 HTTPS 或 localhost 在桌面 Chrome / Edge 或 Android Chrome 中打开。图片处理在本地完成。
+浏览器里的墨水屏工具，顶部三个页签：
+
+- **传图工具**：排版图片、文字与手写图层，转换为墨水屏位图，并通过 Web Bluetooth 直传价签。
+- **模式卡片**：月历、日历 + 天气、五天天气、倒计时、每日一言，直接推到 800 × 480 黑白红价签。
+- **OTA 工具**：选择 `.eslfw` 固件包，在本地校验 CRC32 / SHA-256 / ECDSA P-256 签名，再通过 BLE 写入价签备用槽。
+
+可直接打开 `index.html` 离线编辑和导出。蓝牙与 OTA 需要通过 HTTPS 或 localhost，在桌面 Chrome / Edge 或 Android Chrome 中打开。图片处理、验签和卡片数据组装都在本地完成。
 
 ## 编辑与导出
 
-1. 选择屏幕型号与色彩模式。列表包含 Waveshare Arduino 示例目录里的 31 个型号，支持黑白、黑白红、黑白黄、四灰阶和七色。也可按面板设置自定义画布。
+1. 选择屏幕型号与色彩模式。列表包含 Waveshare Arduino 示例目录里的 35 个型号、43 个面板×色彩组合，支持黑白、黑白红、黑白黄、四灰阶和七色。也可按面板设置自定义画布。
 2. 点击画布、拖放或粘贴图片。第一张图片等比铺满画布，拖动可调整取景。滚轮或双指缩放，三指或「旋转」滑块旋转图层。「适配」可切换铺满或完整显示。
 3. 「＋ 图层」可添加图片、文字和手写。只有一层时直接使用工具栏，多层时在图层列表里选择、排序或隐藏。选中可见手写层即可落笔，切走即退出。三种图层均可擦除与撤销擦除，露出下方图层或白底。
 4. 每层独立设置抖动与色彩映射。图片自动选择转换参数，文字和手写默认关闭抖动。黑白红或黑白黄模式下，「自动主色」按该层可见像素的 RGB 主通道占比选择红墨或黄墨的来源。也可指定 RGB 通道，或用「指定源色」将接近所选色相的像素映射到该墨色。
@@ -32,7 +38,7 @@ BLE 固定使用驱动编码及表中的原始极性。手动模式里的网关�
 
 ## BLE 设备接入
 
-TLSR8359 价签固件 **0.5.79** 支持无配对、无密钥的 BLE 图传。浏览器选中价签后即可传图。OTA 独立进行，写入类命令要求加密链路及密码解锁，升级镜像还需通过签名校验。第三方设备可实现下述协议。
+TLSR8359 价签固件 **0.6.2** 支持无配对、无密钥的 BLE 图传、卡片与 OTA。0.5.81 起删除了 16 B 应用密钥、SMP 配对和 `0x06–0x0A`；固件真实性只由 `0x22` 的 ECDSA 签名和 `0x20` 的 `seq` 防降级保证。第三方设备可实现下述协议。
 
 ### 广播、GATT 和屏幕规格
 
@@ -62,11 +68,11 @@ TLSR8359 价签固件 **0.5.79** 支持无配对、无密钥的 BLE 图传。浏
 
 ## 价签卡片
 
-在顶部打开「价签卡片」，选择月历、日历 + 天气、五天天气、倒计时或每日一言。TLSR8359 0.5.79 的 800 × 480 黑白红价签可以直接使用这五种版式。页面与传图共用 BLE 连接，无需网关或密钥。配置保存在当前浏览器内。
+在「模式卡片」页签选择月历、日历 + 天气、五天天气、倒计时或每日一言。TLSR8359 0.6.2 的 800 × 480 黑白红价签可以直接使用这五种版式。页面与传图、OTA 共用 BLE 连接，无需网关或密钥。配置保存在当前浏览器内。
 
 - 月历可选择周日或周一开始，并从 [holiday-cn](https://github.com/NateScarlet/holiday-cn) 同步中国大陆调休。天气卡片支持搜索城市或填写坐标，在浏览器里从 [Open-Meteo](https://open-meteo.com/) 获取数据。天气随推送更新。七天完整天气帧需要 ATT MTU 至少 146。
-- 倒计时填写标题、日期和可选正文。每日一言可手动填 1–7 条，或取示例及 [一言](https://hitokoto.cn/) 数据。价签按同步时的本机日期计算倒计时，按日切换缓存的一言。可以读取当前卡片状态和手动切换到下一条。
-- 卡片由价签绘制，整刷约 25 秒，蓝牙可能断开。页面在请求刷新前核对价签回执及卡片状态，一言还会校验 Flash 回读。刷新受理回执表示价签已接收请求。屏上结果可直接查看，重新连接后也可读取上次整刷 BUSY 耗时。0.5.79 会缓存已绘制卡片的指纹，传图后重推相同卡片有可能跳过刷屏。
+- 倒计时填写标题、日期和可选正文。每日一言可手动填 1–255 条（整包 ≤ 16 KB），或取示例及 [一言](https://hitokoto.cn/) 数据。价签按同步时的本机日期计算倒计时，按日切换缓存的一言。可以读取当前卡片状态和手动切换到下一条。
+- 卡片由价签绘制，整刷约 25 秒，蓝牙可能断开。页面在请求刷新前核对价签回执及卡片状态，一言还会校验 Flash 回读。刷新受理回执表示价签已接收请求。屏上结果可直接查看，重新连接后也可读取上次整刷的准备/波形耗时。0.6.x 会缓存已绘制卡片的指纹，传图后重推相同卡片有可能跳过刷屏。
 
 ### 卡片数据帧
 
@@ -81,19 +87,76 @@ TLSR8359 价签固件 **0.5.79** 支持无配对、无密钥的 BLE 图传。浏
 | `43 n [day]… current hourly` | `C3 ok` | 每日条目共 `n` 条（至多 7），随后为当前天气和 24 小时预报 |
 | `44 mode week accent len city…` | `C4 ok` | 设置版式（`01` 至 `05` 按上述顺序）、每周起点（`00` 周日、`01` 周一）和城市（UTF-8，至多 11 B）。网页保留默认 `accent=00` |
 | `45` | `C5 00 repaint` | 启动刷屏，`repaint=00` 表示按卡片指纹跳过刷屏，`01` 表示开始整刷 |
-| `46` | `C6 mode assets days rest flags busy:u16BE clock month day quotes slot extra` | 读状态。`flags` bit0/1 表示逐时/当前天气，bit2 表示周一起始。`clock` bit0 表示时间已同步，`extra` bit0 表示倒计时已设置、bit2 表示已加载 U5 字库。`slot` 从 0 开始 |
+| `46` | `C6 mode assets days rest flags busy:u16BE clock month day quotes slot extra pre_ms:u16BE total_ms:u16BE` | 读状态，opcode 加 17 B，共 18 B。前 13 个 payload 字节保持旧布局；末尾新增准备耗时和总耗时。`flags` bit0/1 表示逐时/当前天气，bit2 表示周一起始。`clock` bit0 表示时间已同步，`extra` bit0 表示倒计时已设置、bit2 表示已加载 U5 字库。`slot` 从 0 开始 |
 | `50 year:u16LE month day tlen title… blen body…` | `D0 ok missing_title missing_body` | UTF-8 标题 1–47 B，正文至多 119 B，回执含缺字数 |
-| `51 count len:u16LE crc32:u32LE` | `D1 ok count` | 开始接收一言整包，1–7 条，至多 2048 B |
+| `51 count len:u16LE crc32:u32LE` | `D1 ok count` | 开始接收一言整包，1–255 条，整包 ≤ 16384 B |
 | `52 payload…` | 每累计经过 512 B 边界时 `D2 got:u16BE` | 按 MTU 分包，以 ATT 响应为每包的节流依据 |
 | `53` | `D3 rc got:u16BE count` | 提交并回读一言。`rc=00` 成功，01 未开始，02 长度不足，03 CRC 不匹配，04 格式错误，05 Flash 回读不一致 |
 | `54` | `D4 count slot` | 切到下一条一言，随后用 `45` 刷屏 |
+| `58` | `D8 count slot used:u16LE gen:u16LE` | 只读：一言库条数、当前 slot、已用字节和代号。旧页面不调用它也不影响推送 |
 
 配置回执的 `ok=01` 表示接受。一言整包是 ASCII `QT01`、条数、一个 `00` 保留字节，再依次写 `正文长度 正文 出处长度 出处`，长度按 UTF-8 字节计，正文 1–223 B，出处 0–39 B。CRC32 覆盖整包。
 
 `43` 每日字段为 `天气码 最高温 最低温 夜间天气码 降水概率 日出时 日出分 日落时 日落分 AQI 风向 风力`。当前字段为 `天气码 温度 体感温度 湿度 气压:u16LE 降水概率 风向 风力`。逐时预报每小时写 `温度 降水概率`，顺序为本机时间的 0–23 时。温度为 `i8` 摄氏度，概率和湿度为 0–100，气压单位 hPa。风向 `0–7` 由北顺时针，`255` 为未知。天气码 `0–15` 依次为晴、多云、阴、小雨、中雨、大雨、雷阵雨、小雪、中雪、大雪、雨夹雪、雾、霾、沙尘、大风、未知。
 
-## 部署与验证
+## OTA 工具
 
-[GitHub 仓库](https://github.com/kxxxxc/ink-studio) 由 Pages 发布 `new-branch` 的根目录，`.nojekyll` 使文件按原样上站。复制部署时保留 `index.html`、`bwr.css`、`core.js`、`panels.js`、`app.js`、`ble-transfer.js`、`cards.js` 和 `.nojekyll`。
+「OTA 工具」页签直接通过 Web Bluetooth 升级价签，不需要网关。流程是：
 
-在网页地址后加 `?fresh=1&selftest=1` 可运行浏览器自测，结果显示在页面底部。主工程另有算法回归 `node tools/bwr-studio/test-core.js` 和网关逐像素对照 `node gateway-idf/tools/web_mix_test.js`。
+1. 连接价签，读 `0x23` 状态，确认在跑槽的 `seq`。
+2. 选择 `.eslfw`。页面先校验 magic、长度、CRC32、SHA-256 和 ECDSA P-256 签名，再比较 `seq`。
+3. 按 `0x20 → 0x21… → 0x22` 写入备用槽；`0x22` 的 98 B 帧要求 ATT MTU 至少 101。
+4. 价签回读 Flash、验签、保存回滚副本、切槽并自动重启。
+5. 重新连接，读 `0x23` 确认 `seq_active` 已变成新包的 seq。
+
+### OTA 数据帧
+
+| A001 写入 | A002 通知 | 用途 |
+| --- | --- | --- |
+| `20 len:u32LE crc32:u32LE seq:u32LE` | `A0 rc erase_ms:u16BE got:u32LE` | 打开或续传；`got>0` 表示从该偏移继续 |
+| `21 payload…` | 每 4 KiB `A1 got:u32LE` | 写入备用槽，无偏移字段 |
+| `22 sha256:32 sig:64 [key_id]` | `A2 rc copy_ms:u16BE` | 校验、搬槽、武装切换并重启 |
+| `23` | `A3` + 26 B | 状态：open/slot/pending/tries/got/len/crc/seq/seq_active/rb_valid/rb_slot |
+| `24` | `A4 rc` | 放弃未完成传输 |
+| `2F` | `A6 mask ms:u16BE sha256("abc")[0..7]` | 密码学自检，`mask & 0x0F == 0x0F` 为健康 |
+
+错误码：`20` 状态错、`21` 参数、`22` 长度、`23` 降级被拒、`24` 字节不足、`25` Flash 内容不符、`26` SHA-256 不符、`27` 签名不符、`28` 搬运失败、`29` 无回滚副本、`2A` 镜像布局不符。
+
+`.eslfw` 是 116 B 头加镜像原文：
+
+| 偏移 | 长度 | 字段 |
+| --- | --- | --- |
+| 0 | 4 | `ESLF` |
+| 4 | 1 | manifest 版本 = 1 |
+| 5 | 1 | key id（0 或 1） |
+| 6 | 2 | 保留 |
+| 8 | 4 | 镜像长度，u32LE |
+| 12 | 4 | 镜像 CRC32，u32LE |
+| 16 | 4 | seq，u32LE |
+| 20 | 32 | SHA-256(image) |
+| 52 | 64 | ECDSA P-256 签名，r‖s 各 32 B 大端 |
+| 116 | n | 镜像原文 |
+
+签名覆盖 `SHA-256(bytes[0, 52))`。公钥固定在 `ota-core.js`，与固件 `src/ota_pubkey.h` / `src/ota_pubkey1.h` 对应；私钥只在电脑上，不进网页。
+
+## 部署与自动同步
+
+本地源在 `tools/bwr-studio`，线上在 [GitHub 仓库](https://github.com/kxxxxc/ink-studio) 的 `new-branch` 根目录，由 GitHub Pages 直接发布，`.nojekyll` 使文件按原样上站。
+
+Gitee 只作为源码仓库。GitHub Actions 工作流 `.github/workflows/ink-studio-sync.yml` 每 15 分钟从 Gitee `master` 的 `tools/bwr-studio` 稀疏检出站点文件，内容有变化就提交到 `new-branch`，Pages 随后自动重建。也可以在 GitHub 的 Actions 页手动 `Run workflow`。
+
+部署文件共 11 个：
+
+`index.html`、`bwr.css`、`core.js`、`panels.js`、`app.js`、`ble-transfer.js`、`cards.js`、`ota-core.js`、`ota.js`、`tabs.js`、`.nojekyll`。
+
+手动复制部署时保留这些文件即可；`README.md`、`preview.png`、`start.cmd` 不参与站点运行。
+
+## 验证
+
+在网页地址后加 `?fresh=1&selftest=1` 可运行浏览器自测，结果显示在页面底部。主工程另有：
+
+```powershell
+node tools/bwr-studio/test-core.js
+```
+
+算法回归当前 21 项通过。OTA 可以用 `dist/tlsr8359-ble-0.6.2.eslfw` 手动选择，页面会显示 CRC32、SHA-256、ECDSA 三项校验结果；真机升级前先读一次 OTA 状态，确认在跑槽的 seq。

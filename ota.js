@@ -1,0 +1,363 @@
+/* Ink Studio — direct Web Bluetooth OTA for the TLSR8359 tag.
+ *
+ * Commands on A001, answers on A002:
+ *   0x20 <len u32> <crc u32> <seq u32>   A0 <rc> <erase_ms u16> <got u32>
+ *   0x21 <bytes>                          A1 <got u32> every 4 KiB
+ *   0x22 <sha32> <sig64> [key id]         A2 <rc> <copy_ms u16>
+ *   0x23                                  A3 + 26 bytes
+ *   0x24                                  A4 <rc>
+ *   0x2F                                  A6 <mask> <ms u16> <sha256("abc")[0..7]>
+ */
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const core = window.OTA_CORE;
+  const ble = window.INK_BLE;
+  const ERRORS = {
+    0x20: '状态错误（没有未完成的传输，或当前状态不允许）',
+    0x21: '参数不合理',
+    0x22: '镜像长度不在 4 KiB–128 KiB',
+    0x23: '降级被拒：这个包的 seq 不比价签在跑的版本新',
+    0x24: '收到的字节少于声明长度',
+    0x25: 'Flash 内容与收到的数据不符',
+    0x26: 'SHA-256 不一致',
+    0x27: 'ECDSA 签名验证失败',
+    0x28: '槽切换或回滚副本准备失败',
+    0x29: '没有可用的回滚副本',
+    0x2A: '镜像不是这个槽布局（+0x1C 不是 OAB4）',
+  };
+
+  let link = null;
+  let pkg = null;
+  let uploading = false;
+  let verifying = false;
+  let ota = null;
+
+  const u32le = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+  const le32 = (bytes, off) =>
+    (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
+  const hex32 = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
+  const esc = (value) => String(value).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function log(message) {
+    const node = $('otaLog');
+    if (node.textContent === '就绪。') node.textContent = '';
+    const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    node.textContent += (node.textContent ? '\n' : '') + '[' + stamp + '] ' + message;
+    node.scrollTop = node.scrollHeight;
+  }
+
+  function status(message, kind = '') {
+    const node = $('otaStatus');
+    node.hidden = !message;
+    node.textContent = message;
+    node.className = 'ble-status' + (kind ? ' ' + kind : '');
+  }
+
+  function errorText(rc) {
+    return ERRORS[rc] || ('状态 0x' + Number(rc).toString(16));
+  }
+
+  function connected() {
+    return !!link?.connected;
+  }
+
+  function acceptable() {
+    if (!pkg || !ota) return null;
+    return pkg.seq >= ota.seqActive;
+  }
+
+  function sync() {
+    const isConnected = connected();
+    const blocked = !!link?.busy || uploading;
+    $('otaConnect').hidden = isConnected;
+    $('otaConnect').disabled = !link?.canConnect || blocked;
+    $('otaDisconnect').hidden = !isConnected;
+    $('otaDisconnect').disabled = !isConnected || blocked;
+    $('otaRead').disabled = !isConnected || blocked;
+    $('otaSelftest').disabled = !isConnected || blocked;
+    $('otaAbort').disabled = !isConnected || blocked;
+    $('otaVerify').disabled = !pkg || uploading || verifying;
+    $('otaUpload').disabled = !isConnected || !pkg?.verified || blocked || acceptable() === false;
+    $('otaLinkBadge').textContent = isConnected ? (link.name || 'ESL 价签') : '未连接';
+    $('otaLinkBadge').classList.toggle('ble-connected', isConnected);
+    $('otaProgress').hidden = !uploading && !$('otaProgress').value;
+    const hint = !window.isSecureContext
+      ? 'OTA 需要通过 HTTPS 或 localhost 打开。'
+      : !window.navigator.bluetooth
+        ? '这个浏览器没有 Web Bluetooth，请用桌面 Chrome / Edge 或 Android Chrome。'
+        : !isConnected
+          ? '先连接价签，再选择 .eslfw 固件包。'
+          : !pkg
+            ? '已连接，选择固件包后会先在本地验签。'
+            : pkg.verified
+              ? (acceptable() === false
+                ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
+                : '签名校验通过，可以下发。')
+              : '固件包还没通过校验，不能下发。';
+    $('otaSupport').hidden = !hint;
+    $('otaSupport').textContent = hint;
+  }
+
+  function renderStatus() {
+    if (!ota) {
+      $('otaState').innerHTML = '<div><span>连接后读取</span><b>—</b></div>';
+      return;
+    }
+    const pending = ota.pending === 255 ? '无' : '槽 ' + ota.pending + '（' + ota.tries + ' 次尝试）';
+    $('otaState').innerHTML =
+      '<div><span>在跑槽</span><b>seq ' + ota.seqActive + ' · 槽 ' + ota.slot + '</b></div>' +
+      '<div><span>待确认</span><b>' + pending + '</b></div>' +
+      '<div><span>回滚副本</span><b>' + (ota.rbValid ? '槽 ' + ota.rbSlot : '无') + '</b></div>' +
+      '<div><span>未完成传输</span><b>' + (ota.open ? ota.got + ' / ' + ota.len + ' B' : '无') + '</b></div>' +
+      '<div><span>最后一次 0x20</span><b>' +
+        (ota.len ? 'len ' + ota.len + ' · seq ' + ota.seq + ' · CRC ' + hex32(ota.crc) : '—') + '</b></div>';
+  }
+
+  function renderPkg() {
+    if (!pkg) {
+      $('otaPkg').innerHTML = '<div><span>固件包</span><b>尚未选择</b></div>';
+      return;
+    }
+    const v = pkg.verification;
+    const checks = v
+      ? (v.crcOk ? '✓' : '✗') + ' CRC32 · ' + (v.shaOk ? '✓' : '✗') + ' SHA-256 · ' +
+        (v.sigOk ? '✓' : '✗') + ' ECDSA'
+      : '待校验';
+    const accept = acceptable();
+    $('otaPkg').innerHTML =
+      '<div><span>文件</span><b>' + esc(pkg.fileName || '') + ' · ' + pkg.total + ' B</b></div>' +
+      '<div><span>镜像</span><b>' + pkg.len + ' B · CRC32 ' + hex32(pkg.crc) + '</b></div>' +
+      '<div><span>序号</span><b>seq ' + pkg.seq + ' · key id ' + pkg.keyId + '</b></div>' +
+      '<div><span>SHA-256</span><b class="mono">' + core.hex(pkg.sha) + '</b></div>' +
+      '<div><span>校验</span><b class="' + (v ? (v.ok ? 'good' : 'bad') : '') + '">' + checks + '</b></div>' +
+      (accept === null ? '' :
+        '<div><span>价签在跑</span><b class="' + (accept ? 'good' : 'bad') + '">seq ' + ota.seqActive +
+          (accept ? ' · 可以升级' : ' · 比包新，会拒绝') + '</b></div>');
+  }
+
+  async function readStatus() {
+    if (!connected()) throw new Error('BLE 未连接');
+    const p = await ble.command([0x23], (packet) => packet[0] === 0xa3 && packet.length >= 27, 6000, '读取 OTA 状态');
+    ota = {
+      open: p[1], slot: p[2], pending: p[3], tries: p[4],
+      got: le32(p, 5), len: le32(p, 9), crc: le32(p, 13),
+      seq: le32(p, 17), seqActive: le32(p, 21), rbValid: p[25], rbSlot: p[26],
+    };
+    renderStatus();
+    renderPkg();
+    sync();
+    log('OTA 状态：在跑 seq ' + ota.seqActive + ' / 槽 ' + ota.slot +
+      (ota.open ? '，未完成 ' + ota.got + '/' + ota.len + ' B' : '，没有未完成传输'));
+    return ota;
+  }
+
+  async function selfTest() {
+    const p = await ble.command([0x2f], (packet) => packet[0] === 0xa6 && packet.length >= 12, 12000, '验签自检');
+    const mask = p[1];
+    const ms = (p[2] << 8) | p[3];
+    const hash8 = core.hex(p.subarray(4, 12));
+    const healthy = (mask & 0x0f) === 0x0f;
+    log('验签自检 mask 0x' + mask.toString(16) + ' · ' + ms + ' ms · sha256("abc")[0..7]=' + hash8 +
+      (healthy ? ' ✓' : ' ✗'));
+    if (!healthy) throw new Error('价签验签自检未通过，先不要升级');
+    status('验签自检通过。', 'good');
+  }
+
+  async function abortTransfer() {
+    const p = await ble.command([0x24], (packet) => packet[0] === 0xa4 && packet.length >= 2, 6000, '放弃 OTA 传输');
+    if (p[1]) throw new Error('放弃失败：' + errorText(p[1]));
+    log('已放弃未完成的 OTA 传输。');
+    await readStatus();
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    pkg = null;
+    renderPkg();
+    sync();
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      pkg = core.parsePackage(buf);
+      pkg.fileName = file.name;
+      pkg.verification = null;
+      pkg.verified = false;
+      renderPkg();
+      log('已读取 ' + file.name + '：镜像 ' + pkg.len + ' B，seq ' + pkg.seq + '，key id ' + pkg.keyId);
+      await verifyPkg();
+    } catch (error) {
+      pkg = null;
+      status('读取固件包失败：' + error.message, 'bad');
+      log('读取失败：' + error.message);
+      renderPkg();
+      sync();
+    }
+  }
+
+  async function verifyPkg() {
+    if (!pkg || verifying) return;
+    verifying = true;
+    status('正在本地校验 CRC32、SHA-256 和 ECDSA 签名…');
+    renderPkg();
+    sync();
+    try {
+      const result = await core.verifyPackage(pkg);
+      pkg.verification = result;
+      pkg.verified = result.ok;
+      renderPkg();
+      if (!result.ok) {
+        const failed = [!result.crcOk && 'CRC32', !result.shaOk && 'SHA-256', !result.sigOk && 'ECDSA']
+          .filter(Boolean).join('、');
+        throw new Error('校验失败：' + failed);
+      }
+      log('本地验签通过：CRC32 ' + hex32(result.crc) + ' · SHA-256 ' + core.hex(result.sha).slice(0, 16) + '…');
+      status('固件包校验通过。', 'good');
+      renderPkg();
+    } catch (error) {
+      status(error.message, 'bad');
+      log('校验失败：' + error.message);
+    } finally {
+      verifying = false;
+      sync();
+    }
+  }
+
+  async function upload() {
+    if (!pkg?.verified) throw new Error('固件包还没通过校验');
+    if (!connected()) throw new Error('BLE 未连接');
+    if (acceptable() === false) throw new Error('这个包的 seq 比价签在跑的旧，价签会拒绝');
+    if (link?.busy) throw new Error('价签正在忙（传图或卡片操作还没结束），稍后再试');
+    uploading = true;
+    ble.setBusy(true);
+    $('otaProgress').hidden = false;
+    $('otaProgress').max = pkg.len;
+    $('otaProgress').value = 0;
+    sync();
+
+    let off = 0;
+    let notifyError = null;
+    const stopNotify = ble.onNotify((packet) => {
+      if (packet[0] === 0x8f) notifyError = new Error('价签在数据阶段报错：' + errorText(packet[1]));
+      else if (packet[0] === 0xa1) {
+        // Progress notifications are advisory; Flash writes can lag the ATT ack.
+      }
+    });
+
+    try {
+      const mtu = await ble.queryMtu();
+      if (mtu < 101) throw new Error('当前 ATT MTU 为 ' + mtu + '，0x22 的 98 B 帧需要至少 101，请换设备或靠近价签');
+      log('ATT MTU ' + mtu + '，开始 OTA：' + pkg.len + ' B，seq ' + pkg.seq);
+
+      const begin = [0x20, ...u32le(pkg.len), ...u32le(pkg.crc), ...u32le(pkg.seq)];
+      const a0 = await ble.command(begin, (p) => p[0] === 0xa0 && p.length >= 8, 40000, 'OTA 开始');
+      if (a0[1]) throw new Error('价签拒绝开始：' + errorText(a0[1]));
+      const eraseMs = (a0[2] << 8) | a0[3];
+      off = le32(a0, 4);
+      if (off > pkg.len) throw new Error('价签报告的续传位置超过镜像长度');
+      $('otaProgress').value = off;
+      log('0x20 已接受：擦除 ' + eraseMs + ' ms' + (off ? '，从 ' + off + ' B 续传' : '，从 0 开始'));
+
+      const chunkSize = Math.min(243, mtu - 4);
+      const startedAt = performance.now();
+      let nextYield = 0;
+      while (off < pkg.len) {
+        if (notifyError) throw notifyError;
+        const count = Math.min(chunkSize, pkg.len - off);
+        const packet = new Uint8Array(count + 1);
+        packet[0] = 0x21;
+        packet.set(pkg.image.subarray(off, off + count), 1);
+        await ble.writeWithResponse(packet);
+        off += count;
+        $('otaProgress').value = off;
+        if (off >= nextYield) {
+          const elapsed = Math.max(0.001, (performance.now() - startedAt) / 1000);
+          status('正在写入 ' + off.toLocaleString() + ' / ' + pkg.len.toLocaleString() + ' B（' +
+            (100 * off / pkg.len).toFixed(1) + '%）· ' + (off / 1024 / elapsed).toFixed(1) + ' KB/s');
+          nextYield = off + Math.max(2048, chunkSize * 8);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      if (notifyError) throw notifyError;
+      log('数据写完，价签正在回读 Flash、算 SHA-256 并验签（约 10–15 秒）…');
+      status('数据已发完，等待价签回读和验签…', 'warn');
+
+      const finish = new Uint8Array(1 + 32 + 64 + 1);
+      finish[0] = 0x22;
+      finish.set(pkg.sha, 1);
+      finish.set(pkg.sig, 33);
+      finish[97] = pkg.keyId;
+      const a2 = await ble.command(finish, (p) => p[0] === 0xa2 && p.length >= 4, 120000, 'OTA 验签');
+      if (a2[1]) throw new Error('价签验签失败：' + errorText(a2[1]));
+      $('otaProgress').value = pkg.len;
+      log('0xA2 rc=0：价签已接受固件，正在切换槽并重启。');
+      status('固件已通过价签验签，价签将在约 1 秒后重启。', 'good');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      status('价签正在重启。约 10 秒后重新连接，再读取 OTA 状态确认 seq_active。', 'warn');
+      log('升级完成。重新连接后确认“在跑槽”的 seq 已变成 ' + pkg.seq + '。');
+    } finally {
+      stopNotify();
+      uploading = false;
+      ble.setBusy(false);
+      sync();
+    }
+  }
+
+  function guard(action) {
+    return async () => {
+      if (uploading || verifying || link?.busy) return;
+      try {
+        status('');
+        await action();
+      } catch (error) {
+        const message = String((error && error.message) || error || '未知错误');
+        status(message, 'bad');
+        log('错误：' + message);
+      } finally {
+        renderPkg();
+        sync();
+      }
+    };
+  }
+
+  $('otaConnect').addEventListener('click', guard(async () => {
+    await ble.connect((message) => status(message, 'bad'));
+    if (ble.isConnected()) {
+      log('已连接 ' + (ble.deviceName() || 'ESL 价签'));
+      await readStatus();
+    }
+  }));
+  $('otaDisconnect').addEventListener('click', guard(async () => {
+    await ble.disconnect();
+    ota = null;
+    renderStatus();
+    sync();
+  }));
+  $('otaRead').addEventListener('click', guard(readStatus));
+  $('otaSelftest').addEventListener('click', guard(selfTest));
+  $('otaAbort').addEventListener('click', guard(abortTransfer));
+  $('otaVerify').addEventListener('click', guard(verifyPkg));
+  $('otaUpload').addEventListener('click', guard(upload));
+  $('otaFile').addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    if (file) void loadFile(file);
+  });
+
+  ble.subscribe((state) => {
+    link = state;
+    if (!state.connected && ota) {
+      ota = null;
+      renderStatus();
+    }
+    sync();
+  });
+  window.addEventListener('ink:tab', (event) => {
+    if (event.detail?.tab === 'ota') sync();
+  });
+
+  renderStatus();
+  renderPkg();
+  sync();
+  log('就绪。先连接价签，再选择 .eslfw 固件包。');
+})();

@@ -24,7 +24,6 @@
     '山重水复疑无路，柳暗花明又一村。 | 陆游',
     '长风破浪会有时，直挂云帆济沧海。 | 李白',
   ];
-  const dialog = $('cardDialog');
   const pad = (v) => String(v).padStart(2, '0');
   const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const le16 = (v) => [v & 255, (v >>> 8) & 255];
@@ -115,7 +114,8 @@
     if (mode === 5) {
       const rows = quoteRows();
       const size = rows.reduce((n, [body, source]) => n + 2 + encoder.encode(body + source).length, 6);
-      $('cardQuoteNote').textContent = `${rows.length}/7 条 · ${size}/2048 B（每条正文 223 B，出处 39 B）`;
+      $('cardQuoteNote').textContent =
+      `已用 ${(size / 1024).toFixed(1)} KB / 16 KB · ${rows.length} 条 · 每条正文 ≤223 B、出处 ≤39 B`;
     }
     updateControls();
   }
@@ -131,7 +131,7 @@
   }
 
   function quoteBlob(rows) {
-    if (rows.length < 1 || rows.length > 7) throw new Error('请输入 1–7 条一言');
+    if (rows.length < 1 || rows.length > 255) throw new Error('请输入 1–255 条一言');
     const bytes = [...encoder.encode('QT01'), rows.length, 0];
     for (const [index, [body, source]] of rows.entries()) {
       const b = encoder.encode(body), s = encoder.encode(source);
@@ -140,7 +140,7 @@
       }
       bytes.push(b.length, ...b, s.length, ...s);
     }
-    if (bytes.length > 2048) throw new Error('一言整包最多 2048 字节');
+    if (bytes.length > 16384) throw new Error('一言整包最多 16384 字节');
     return Uint8Array.from(bytes);
   }
 
@@ -311,10 +311,13 @@
   }
 
   async function readCard() {
-    const p = await request([0x46], 0xc6, 14, '读取卡片状态');
+    // 0.6.x C6: opcode + 17 bytes. The first 13 payload bytes keep the old
+    // layout; the last four are pre_ms and total_ms (u16BE each).
+    const p = await request([0x46], 0xc6, 18, '读取卡片状态');
     return { mode: p[1], weather: p[3], rest: p[4], flags: p[5], busyMs: (p[6] << 8) | p[7],
       clock: p[8] & 1, month: p[9], day: p[10], quotes: p[11], slot: p[12],
-      countdown: p[13] & 1, fonts: p[13] & 4 };
+      countdown: p[13] & 1, fonts: p[13] & 4,
+      preMs: (p[14] << 8) | p[15], totalMs: (p[16] << 8) | p[17] };
   }
 
   async function sendRest(year, rows, payload) {
@@ -415,7 +418,8 @@
     status(`${modeNames[info.mode] || '未知版式'} · ${info.clock ? `${pad(info.month)}-${pad(info.day)}` : '时间未同步'}` +
       ` · 天气 ${info.weather} 天 · 调休 ${info.rest} 条 · 倒计时${info.countdown ? '已设置' : '未设置'}` +
       ` · 一言 ${info.quotes} 条${info.quotes ? `（第 ${info.slot + 1} 条）` : ''}` +
-      ` · U5 字库${info.fonts ? '已加载' : '未加载'} · 上次整刷 BUSY ${info.busyMs} ms`, 'good');
+      ` · U5 字库${info.fonts ? '已加载' : '未加载'} · 上次整刷 ${info.totalMs ? info.totalMs + ' ms' : info.busyMs + ' ms'}` +
+      (info.preMs && info.totalMs ? `（准备 ${info.preMs} ms + 波形 ${info.busyMs} ms）` : ''), 'good');
   }
 
   async function nextQuote() {
@@ -429,8 +433,6 @@
 
   const run = (action) => ble.runBusy(async () => { status(''); await action(); }, (error) => status(error, 'bad'));
   const search = () => inputTask(searchCities, 'cardWeatherStatus');
-  $('cardOpen').addEventListener('click', () => { updateForm(); dialog.showModal(); });
-  $('cardClose').addEventListener('click', () => dialog.close());
   $('cardConnect').addEventListener('click', () => { status(''); return ble.connect((error) => status(error, 'bad')); });
   $('cardDisconnect').addEventListener('click', () => { status(''); return ble.disconnect(); });
   $('cardPush').addEventListener('click', () => run(pushCard));

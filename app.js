@@ -2016,6 +2016,18 @@
   function bindEvents() {
     $('debugBtn').addEventListener('click', () => setDebug(!state.debugOpen));
     $('autoBtn').addEventListener('click', restoreAutomatic);
+    window.addEventListener('ink:tab', (event) => {
+      if (event.detail?.tab !== 'image') {
+        endStageInteraction();
+        return;
+      }
+      // The stage was hidden while another tab was open; its size is only
+      // meaningful again after the browser has laid it out.
+      requestAnimationFrame(() => {
+        if (state.autoFit) fitView(false);
+        else drawStage();
+      });
+    });
 
     bindRange('bri', (v) => { state.pre.brightness = v; }, String);
     bindRange('con', (v) => { state.pre.contrast = v; }, String);
