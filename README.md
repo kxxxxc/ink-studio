@@ -145,6 +145,14 @@ TLSR8359 价签固件 **0.6.2** 支持无配对、无密钥的 BLE 图传、卡�
 
 Gitee 只作为源码仓库。GitHub Actions 工作流 `.github/workflows/ink-studio-sync.yml` 每 15 分钟从 Gitee `master` 的 `tools/bwr-studio` 稀疏检出站点文件，内容有变化就提交到 `new-branch`，Pages 随后自动重建。也可以在 GitHub 的 Actions 页手动 `Run workflow`。
 
+首次启用需要在 GitHub 仓库添加一个 Secret：
+
+1. 在 Gitee「设置 → 私人令牌」创建一个带 `project` 权限的令牌。
+2. 在 GitHub 仓库「Settings → Secrets and variables → Actions」新建 `GITEE_TOKEN`，值是上一步的令牌。用户名默认 `kang-chao`，需要覆盖时再加 `GITEE_USER`。
+3. 手动跑一次 `Sync Ink Studio from Gitee`。没有配置 `GITEE_TOKEN` 时工作流只打印一条 notice 并跳过，不会失败。
+
+如果更希望“Gitee 主动推 GitHub”，Gitee 仓库设置里有「仓库镜像管理 → Push 方向镜像」，它按整仓镜像，适合再建一个完整镜像仓库；本 Pages 仓库只放站点文件，因此这里采用定时拉取 `tools/bwr-studio` 的方式。
+
 部署文件共 11 个：
 
 `index.html`、`bwr.css`、`core.js`、`panels.js`、`app.js`、`ble-transfer.js`、`cards.js`、`ota-core.js`、`ota.js`、`tabs.js`、`.nojekyll`。

@@ -28,20 +28,30 @@ jobs:
           fetch-depth: 0
 
       - name: Pull tools/bwr-studio from Gitee
+        id: source
         shell: bash
         env:
           GIT_TERMINAL_PROMPT: '0'
+          GITEE_USER: ${{ secrets.GITEE_USER }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "::notice::GITEE_TOKEN is not configured; skipping the Gitee sync."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          user="${GITEE_USER:-kang-chao}"
           rm -rf /tmp/ink-src
           for attempt in 1 2 3; do
             if git clone --depth 1 --filter=blob:none --sparse \
-                https://gitee.com/kang-chao/eink-0213-rf.git /tmp/ink-src; then
+                "https://${user}:${GITEE_TOKEN}@gitee.com/kang-chao/eink-0213-rf.git" /tmp/ink-src; then
               break
             fi
             echo "Gitee clone failed (attempt $attempt), retrying..."
             sleep 10
           done
+          test -d /tmp/ink-src/.git
           cd /tmp/ink-src
           git sparse-checkout set tools/bwr-studio
           cd "$GITHUB_WORKSPACE"
@@ -50,8 +60,10 @@ jobs:
             cards.js ota-core.js ota.js tabs.js .nojekyll README.md; do
             cp "/tmp/ink-src/tools/bwr-studio/$file" .
           done
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push if the site changed
+        if: steps.source.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -69,7 +81,7 @@ jobs:
           git push origin HEAD:new-branch
 
       - name: Request a Pages rebuild
-        if: success()
+        if: steps.source.outputs.enabled == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
