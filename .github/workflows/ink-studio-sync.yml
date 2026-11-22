@@ -57,7 +57,8 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           for file in \
             index.html bwr.css core.js panels.js app.js ble-transfer.js \
-            cards.js ota-core.js ota.js tabs.js .nojekyll README.md; do
+            cards.js ota-core.js ota.js fontpack.js fonts.js tabs.js \
+            .nojekyll README.md; do
             cp "/tmp/ink-src/tools/bwr-studio/$file" .
           done
           echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -69,7 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           files=(index.html bwr.css core.js panels.js app.js ble-transfer.js \
-            cards.js ota-core.js ota.js tabs.js .nojekyll README.md)
+            cards.js ota-core.js ota.js fontpack.js fonts.js tabs.js \
+            .nojekyll README.md)
           git add -- "${files[@]}"
           if git diff --cached --quiet; then
             echo "Ink Studio is already up to date."
