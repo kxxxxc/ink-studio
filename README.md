@@ -151,6 +151,8 @@ Gitee 只作为源码仓库。GitHub Actions 工作流 `.github/workflows/ink-st
 2. 在 GitHub 仓库「Settings → Secrets and variables → Actions」新建 `GITEE_TOKEN`，值是上一步的令牌。用户名默认 `kang-chao`，需要覆盖时再加 `GITEE_USER`。
 3. 手动跑一次 `Sync Ink Studio from Gitee`。没有配置 `GITEE_TOKEN` 时工作流只打印一条 notice 并跳过，不会失败。
 
+同步记录在 GitHub Actions 的 `Sync Ink Studio from Gitee` 里；如果拉取失败，先检查 `GITEE_TOKEN` 是否过期。提交到 Gitee 后通常 5–15 分钟内上站。
+
 如果更希望“Gitee 主动推 GitHub”，Gitee 仓库设置里有「仓库镜像管理 → Push 方向镜像」，它按整仓镜像，适合再建一个完整镜像仓库；本 Pages 仓库只放站点文件，因此这里采用定时拉取 `tools/bwr-studio` 的方式。
 
 部署文件共 11 个：
