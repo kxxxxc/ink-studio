@@ -214,4 +214,3 @@ node tools/bwr-studio/test-fonts-browser.js   # 真跑一遍浏览器：页签�
 立的方法。
 
 OTA 可以用 `dist/tlsr8359-ble-0.6.2.eslfw` 手动选择，页面会显示 CRC32、SHA-256、ECDSA 三项校验结果；真机升级前先读一次 OTA 状态，确认在跑槽的 seq。
-
