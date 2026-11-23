@@ -34,6 +34,12 @@
   let verifying = false;
   let ota = null;
 
+  // 验签在哪里做由宿主决定：浏览器直连时用 WebCrypto（core.verifyPackage），prism-ble 的
+  // http 页面没有 crypto.subtle，就换成窗口注入的 OTA_VERIFIER（转发给本板用 mbedtls 验）。
+  // 返回值形状一致：{ crc, sha, crcOk, shaOk, sigOk, ok }。
+  const verifier = () => (typeof window !== 'undefined' && window.OTA_VERIFIER) || null;
+  const verifyPackage = (p) => (verifier() ? verifier()(p) : core.verifyPackage(p));
+
   const u32le = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
   const le32 = (bytes, off) =>
     (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
@@ -82,19 +88,20 @@
     $('otaLinkBadge').textContent = !hasDevice ? '未连接' : label + (isConnected ? ' · 传输中' : ' · 未连接');
     $('otaLinkBadge').classList.toggle('ble-connected', isConnected);
     $('otaProgress').hidden = !uploading && !$('otaProgress').value;
-    const hint = !window.isSecureContext
-      ? 'OTA 需要通过 HTTPS 或 localhost 打开。'
-      : !window.navigator.bluetooth
-        ? '这个浏览器没有 Web Bluetooth，请用桌面 Chrome / Edge 或 Android Chrome。'
-        : !hasDevice
-          ? '先在右上角选价签；读状态和下发时临时连接、结束断开。'
-          : !pkg
-            ? '选择 .eslfw 固件包，页面先在本地验签。'
-            : pkg.verified
-              ? (acceptable() === false
-                ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
-                : '签名校验通过，可以下发。')
-              : '固件包还没通过校验，不能下发。';
+    // 能不能连价签由传输层回答（直连版看 HTTPS + Web Bluetooth，网关版恒可用），
+    // 这里只负责把原因显示出来。
+    const blockedBy = ble.unavailableReason ? ble.unavailableReason() : null;
+    const hint = blockedBy
+      ? blockedBy
+      : !hasDevice
+        ? '先在右上角选价签；读状态和下发时临时连接、结束断开。'
+        : !pkg
+          ? '选择 .eslfw 固件包，页面先在本地验签。'
+          : pkg.verified
+            ? (acceptable() === false
+              ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
+              : '签名校验通过，可以下发。')
+            : '固件包还没通过校验，不能下发。';
     $('otaSupport').hidden = !hint;
     $('otaSupport').textContent = hint;
   }
@@ -197,11 +204,11 @@
   async function verifyPkg() {
     if (!pkg || verifying) return;
     verifying = true;
-    status('正在本地校验 CRC32、SHA-256 和 ECDSA 签名…');
+    status('正在校验 CRC32、SHA-256 和 ECDSA 签名…');
     renderPkg();
     sync();
     try {
-      const result = await core.verifyPackage(pkg);
+      const result = await verifyPackage(pkg);
       pkg.verification = result;
       pkg.verified = result.ok;
       renderPkg();
@@ -210,7 +217,7 @@
           .filter(Boolean).join('、');
         throw new Error('校验失败：' + failed);
       }
-      log('本地验签通过：CRC32 ' + hex32(result.crc) + ' · SHA-256 ' + core.hex(result.sha).slice(0, 16) + '…');
+      log('验签通过：CRC32 ' + hex32(result.crc) + ' · SHA-256 ' + core.hex(result.sha).slice(0, 16) + '…');
       status('固件包校验通过。', 'good');
       renderPkg();
     } catch (error) {
@@ -226,7 +233,8 @@
     if (!pkg?.verified) throw new Error('固件包还没通过校验');
     if (!connected()) throw new Error('BLE 未连接');
     if (acceptable() === false) throw new Error('这个包的 seq 比价签在跑的旧，价签会拒绝');
-    if (link?.busy) throw new Error('价签正在忙（传图或卡片操作还没结束），稍后再试');
+    // 不要再检查 link?.busy：upload 是通过 withTag → ble.session 进来的，会话自己已经把
+    // busy 置真，这里再看一定是「忙」，下发永远走不出去。真正的并发保护在 guard() 里。
     uploading = true;
     ble.setBusy(true);
     $('otaProgress').hidden = false;

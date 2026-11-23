@@ -52,6 +52,14 @@
     return !!(window.isSecureContext && navigator.bluetooth);
   }
 
+  // 公共层（app.js / ota.js）不该知道传输方式，只问这一句「现在能不能连上价签」。
+  // 能连就返回 null，不能就连同原因一起返回，界面直接显示。
+  function unavailableReason() {
+    if (!window.isSecureContext) return '需要用 HTTPS 或 localhost 打开才能连价签。';
+    if (!navigator.bluetooth) return '这个浏览器没有 Web Bluetooth，请用桌面 Chrome / Edge 或 Android Chrome。';
+    return null;
+  }
+
   // ------------------------------------------------------- top-right device picker
   const SELECT_KEY = 'ink-studio-tag-id';
   const tagId = (d) => d?.id || d?.name || '';
@@ -579,6 +587,7 @@
       return () => notifyListeners.delete(listener);
     },
     isConnected: () => connected,
+    unavailableReason,
     deviceName: () => (connected ? device?.name : selected?.name) || '',
     selectedDevice: () => selected && { id: tagId(selected), name: deviceLabel(selected) },
     scan: scanDevices,

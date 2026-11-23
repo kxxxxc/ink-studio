@@ -11,6 +11,26 @@
 
 可直接打开 `index.html` 离线编辑和导出。蓝牙与 OTA 需要通过 HTTPS 或 localhost，在桌面 Chrome / Edge 或 Android Chrome 中打开。图片处理、验签和卡片数据组装都在本地完成。
 
+## 这个目录也是 prism-ble 网页的唯一真源
+
+`prism-ble`（ESP32-C3 网关，页面经 HTTP 中转 BLE，走不了 Web Bluetooth）不复制这里的文件，
+而是在编译时直接读过去拼装。分三层：
+
+| 层 | 文件 | 谁维护 |
+|---|---|---|
+| 公共 | `core.js` `panels.js` `app.js` `cards.js` `ota-core.js` `ota.js` `fontpack.js` `fonts.js` `tabs.js` `bwr.css` | 这里，**两边同时生效** |
+| 外壳 | `index.html` | 这里，prism-ble 的 `studio.html` 由它生成 |
+| 传输 | `ble-transfer.js`（直连 GATT） | 这里；网关那份在 `prism-ble/main/web/c3/c3-transfer.js` |
+
+协议点只有两个，改的时候要留意对端：
+
+- `window.INK_BLE`：页面与传输层的契约，`ble-transfer.js` 和 `c3-transfer.js` 各实现一份，接口必须一致。
+- `window.OTA_VERIFIER`：可选钩子。不设置时 `ota.js` 用 WebCrypto 本地验签；网关页设成转发给本板。
+
+`tabs.js` 的页签列表读 `<body data-tabs="image,cards,fonts,ota">`，缺省就是这四个；网关页多一个
+`advanced`，写在它自己的外壳里。改 UI 文案只改这里，`prism-ble/main/web/c3/shell_rules.py` 里
+对不上的规则会让固件构建失败，不会悄悄漂移。
+
 ## 编辑与导出
 
 1. 选择屏幕型号与色彩模式。列表包含 Waveshare Arduino 示例目录里的 35 个型号、43 个面板×色彩组合，支持黑白、黑白红、黑白黄、四灰阶和七色。也可按面板设置自定义画布。旁边的「横版 / 竖版」按钮切换编辑方向（默认横版）：切到竖版时画布宽高对调，已有图层整体旋转 90° 且缩放保持不变，画面观感不变。
