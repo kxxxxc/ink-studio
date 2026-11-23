@@ -65,6 +65,25 @@
   const tagId = (d) => d?.id || d?.name || '';
   const deviceLabel = (d) => d?.name || 'ESL 价签';
 
+  /* 设备规格只有连着才读得到，但按钮必须在第一次连接之前就能按：点“发送”才连接、连接里才读
+   * 规格、而“发送”原来又要求已知规格 —— 那就是死锁（只有“中止”能按，因为它不看规格）。
+   * 所以规格只当提示用：按设备记住上次读到的规格和有没有未完成的平面。 */
+  const PANEL_KEY = 'ink-studio-panel-specs';
+  const panelSpecs = new Map();
+  const cachedPanel = () => (selected ? panelSpecs.get(tagId(selected)) || null : null);
+  function loadPanelSpecs() {
+    try {
+      for (const [id, spec] of Object.entries(JSON.parse(localStorage.getItem(PANEL_KEY) || '{}'))) {
+        if (spec && spec.w >= 8 && spec.h >= 8 && spec.mode) panelSpecs.set(id, spec);
+      }
+    } catch (e) { /* 存储被禁用时只是少一条提示 */ }
+  }
+  function rememberPanel(spec, active) {
+    if (!selected || !spec) return;
+    panelSpecs.set(tagId(selected), { w: spec.w, h: spec.h, mode: spec.mode, active: active ? 1 : 0 });
+    try { localStorage.setItem(PANEL_KEY, JSON.stringify(Object.fromEntries(panelSpecs))); } catch (e) { /* optional */ }
+  }
+
   function renderDevices() {
     const box = $('tagSelect');
     if (!box) return;
@@ -91,6 +110,7 @@
   // getDevices() only returns devices this origin already has permission for. It opens no GATT
   // link, so the remembered choice can be restored on load without connecting.
   async function initDevices() {
+    loadPanelSpecs();
     if (!navigator.bluetooth?.getDevices) { renderDevices(); return; }
     try {
       devices = Array.from(await navigator.bluetooth.getDevices());
@@ -137,7 +157,9 @@
   }
 
   function panelDescription(spec) {
-    return spec.w + ' × ' + spec.h + ' ' + window.INK_PANELS.modes[spec.mode].label;
+    // 缓存里的 mode 可能是旧版本写下的名字，别让查不到标签把提示整块打断。
+    const label = window.INK_PANELS.modes[spec.mode]?.label || spec.mode;
+    return spec.w + ' × ' + spec.h + ' ' + label;
   }
 
   function readPanel(packet) {
@@ -157,9 +179,13 @@
     const blocked = busy || externalBusy;
     const hasDevice = !!selected;
     const label = connected ? deviceLabel(device) : (hasDevice ? deviceLabel(selected) : '');
+    // 规格只在提示里用；能不能按只看“选了价签、画布有像素”。规格不符由会话里的 queryStatus 报。
+    const spec = connected ? panel : cachedPanel();
+    const pendingPlane = connected ? !!transferPlane : !!(spec && spec.active);
+    const out = lab.outDims();   // 竖版编辑时成品是横版，比对和发送都用成品尺寸
     $('bleSend').disabled = blocked || !hasDevice || !!transferPlane ||
-      !panelMatches(panel, lab.state) || lab.state.codes?.length !== lab.state.w * lab.state.h;
-    $('bleAbort').hidden = !hasDevice || busy;
+      lab.state.codes?.length !== lab.state.w * lab.state.h;
+    $('bleAbort').hidden = !hasDevice || busy || !pendingPlane;
     $('bleAbort').disabled = blocked || !hasDevice;
     const stateNode = $('tagState');
     if (stateNode) {
@@ -176,14 +202,16 @@
       hint = '蓝牙直连可用桌面 Chrome / Edge 或 Android Chrome。';
     } else if (!hasDevice) {
       hint = '先在右上角点“扫描”选择价签；页面加载和空闲时不会连接蓝牙。';
-    } else if (connected && panel) {
-      hint = panelMatches(panel, lab.state)
-        ? '设备规格：' + panelDescription(panel)
-        : '请将画布切换为设备规格：' + panelDescription(panel);
+    } else if (!(lab.state.codes?.length === lab.state.w * lab.state.h)) {
+      hint = '先在左侧“添加图片”（或点“测试卡”等示例），画布有内容后才能发送。';
+    } else if (spec) {
+      hint = panelMatches(spec, { w: out.w, h: out.h, colorMode: lab.state.colorMode })
+        ? '设备规格：' + panelDescription(spec)
+        : '请将画布切换为设备规格：' + panelDescription(spec);
     }
     $('bleSupport').textContent = hint;
     $('bleSupport').hidden = !hint;
-    const state = { canConnect, connected, busy: blocked, transferPlane, panel,
+    const state = { canConnect, connected, busy: blocked, transferPlane, panel: spec,
       name: label, hasDevice, tagKey: selected ? tagId(selected) : '' };
     for (const listener of Array.from(linkListeners)) {
       try { listener(state); } catch (error) { console.error(error); }
@@ -318,6 +346,7 @@
       throw new Error('设备报告了无效的平面编号');
     }
     transferPlane = status.active;
+    rememberPanel(panel, status.active);
     updateControls();
     if (status.active) {
       setStatus('价签有未完成的平面 ' + status.active + '（已收 ' + status.got.toLocaleString() + ' B）。请先点“中止未完成传输”，再发送新图。', 'bad');
@@ -385,6 +414,9 @@
       transferPlane = 0;
       updateControls();
     } catch (error) {
+      // 中断后价签那边很可能留着一个半成品平面：先按“有”记下，会话结束就能看到“中止”，
+      // 不用先白按一次发送等它 0x17 报出来（真没有的话点一次中止也会自己纠正回来）。
+      rememberPanel(panel, planeNumber);
       const detail = device?.gatt.connected ? error.message : 'BLE 连接已断开，请重新连接';
       const count = sent.toLocaleString() + ' / ' + total.toLocaleString() + ' B 已获写入确认';
       throw new Error(planeLabel + ' · ' + stage + '（' + count + '）：' + detail, { cause: error });

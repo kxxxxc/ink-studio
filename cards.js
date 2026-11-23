@@ -8,7 +8,7 @@
   // that tab nor /api/card/cfg. Detect the shell statically (tabs.js loads after this file).
   const gatewayUI = !!document.getElementById('pageAdvanced') || document.body.classList.contains('studio-five');
   const CONFIG_HEAD = { 'X-Prism-Config': '1' };
-  const modeNames = ['', '月历', '日历 + 天气', '五天天气', '倒计时', '每日一言'];
+  const modeNames = ['', '月历', '日历 + 天气', '五天天气', '倒计时', '每日一言', '时间'];
   const settingsIds = ['cardMode', 'cardWeek', 'cardLat', 'cardLon', 'cardCity',
     'cardCdTitle', 'cardCdDate', 'cardCdBody', 'cardQuoteRows'];
   const settingsKey = 'ink-studio-cards';
@@ -56,15 +56,24 @@
     return panel?.w === 800 && panel.h === 480 && panel.mode === 'bwr';
   }
 
+  /* 规格只有连着才读得到：没连过这台价签时 panel 为空，未知不等于不支持。原来这里要求
+   * link.connected，而连接只在点按钮时才发生 —— “推送卡片”于是永远是灰的。现在把核对放
+   * 到会话里（pushCard 开头），按钮只要求“选了价签”。缓存到的规格不符才提前禁用。 */
+  const wrongPanel = () => !!link?.panel && !supportsCards();
+  function panelLabel(spec) {
+    const name = window.INK_PANELS?.modes?.[spec.mode]?.label || spec.mode;
+    return spec.w + ' × ' + spec.h + ' ' + name;
+  }
+
   function updateControls() {
     if (!link) return;
     const blocked = link.busy || loading;
-    const capable = link.connected && supportsCards();
     const hasDevice = !!link.hasDevice;
+    const wrong = wrongPanel();
     const label = link.name || '';
     $('cardFields').disabled = blocked;
     $('cardRead').disabled = blocked || !hasDevice;
-    $('cardPush').disabled = blocked || !capable || !!link.transferPlane;
+    $('cardPush').disabled = blocked || !hasDevice || !link.canConnect || wrong || !!link.transferPlane;
     $('cardQuoteNext').hidden = cardMode() !== 5;
     $('cardQuoteNext').disabled = $('cardPush').disabled;
     $('cardLink').textContent = !hasDevice ? '未连接' : label + (link.connected ? ' · 传输中' : ' · 未连接');
@@ -72,7 +81,7 @@
     let hint = '选价签后点按钮即临时连接，结束自动断开。';
     if (!link.canConnect) hint = '蓝牙直连需要 HTTPS 和支持 Web Bluetooth 的 Chrome 或 Edge。';
     else if (!hasDevice) hint = '请先在右上角选择价签；空闲时不会连接。';
-    else if (link.connected && !capable) hint = '这些卡片需要支持本机渲染的 800 × 480 黑白红价签。';
+    else if (wrong) hint = '这些卡片需要支持本机渲染的 800 × 480 黑白红价签，当前价签是 ' + panelLabel(link.panel) + '。';
     else if (link.transferPlane) hint = '价签正在接收图片，请先完成或中止传图。';
     $('cardLinkHint').textContent = hint;
   }
@@ -107,7 +116,8 @@
     $('cardWeather').hidden = !weatherMode(mode);
     $('cardCountdown').hidden = mode !== 4;
     $('cardQuotes').hidden = mode !== 5;
-    $('cardTextHint').hidden = mode < 4;
+    $('cardTextHint').hidden = mode < 4 || mode === 6;
+    $('cardClockHint').hidden = mode !== 6;
     if (mode === 4) {
       const target = $('cardCdDate').valueAsNumber;
       const today = Date.parse(dateKey(new Date()));
@@ -478,11 +488,19 @@
     }
     const result = reply ? '价签已受理刷新。' : '刷新命令已发送，未收到价签回执。';
     status(summary + ' ' + result + ' 整刷约需 25 秒，期间蓝牙可能断开。', 'warn');
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, 32000 - (Date.now() - startedAt))));
+    /* The C5 reply arrives *before* the render starts, and the 0xC6 total measured on the
+     * 7.5" tag is ~36 s (pre ~10 s + waveform ~25 s; epd.c allows up to 30 s of waveform).
+     * 32 s unlocked while the tag was still blocked - a second push in that window is lost. */
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, 42000 - (Date.now() - startedAt))));
     status(summary + ' ' + result + ' 请查看屏幕确认。', 'warn');
   }
 
   async function pushCard() {
+    // 会话已经连上并读过 0x17，panel 是刚测出来的真规格；不合就在这里拦，别白拉天气。
+    if (!supportsCards()) {
+      throw new Error('这些卡片需要 800 × 480 黑白红价签' +
+        (link?.panel ? '，当前连上的是 ' + panelLabel(link.panel) : '') + '。');
+    }
     await ensureGatewayCfg();
     const mode = cardMode();
     const week = mode <= 2 ? Number($('cardWeek').value) : 0;
@@ -506,7 +524,12 @@
     }
     if (countdown && countdown.length > payload) throw new Error(`此连接最多可发送 ${payload} 字节，请缩短倒计时标题或正文`);
 
-    await setFrame([0x37, ...le16(now.getFullYear()), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes()],
+    /* Read the clock again right before the frame goes out: `now` was taken before two BLE
+     * round-trips (readCard, queryMtu), and whatever seconds that took would come straight back
+     * as the tag running late by the same amount. */
+    const at = new Date();
+    await setFrame([0x37, ...le16(at.getFullYear()), at.getMonth() + 1, at.getDate(),
+      at.getHours(), at.getMinutes(), at.getSeconds()],
       0xb7, 2, '同步本机时间');
     const notes = [];
     if (rows) await sendRest(year, rows, payload);

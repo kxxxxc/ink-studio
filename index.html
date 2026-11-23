@@ -374,7 +374,7 @@
   <div class="page-head">
     <div>
       <h1>模式卡片</h1>
-      <p class="page-lead">选一种版式，把月历、天气、倒计时或每日一言直接推到 800 × 480 黑白红价签。配置保存在当前浏览器。</p>
+      <p class="page-lead">选一种版式，把月历、天气、倒计时、每日一言或时间直接推到 800 × 480 黑白红价签。配置保存在当前浏览器。</p>
     </div>
   </div>
   <div class="card-body">
@@ -386,6 +386,7 @@
           <option value="3">五天天气</option>
           <option value="4">倒计时</option>
           <option value="5">每日一言</option>
+          <option value="6">时间</option>
         </select>
       </label>
       <label id="cardCalendar">每周起始
@@ -433,6 +434,7 @@
         <p class="hint" id="cardQuoteStatus" role="status"></p>
       </div>
       <p class="hint" id="cardTextHint" hidden>用 <code>#r文字#e</code> 标红。价签按本机同步的日期在零点更新。</p>
+      <p class="hint" id="cardClockHint" hidden>推送后价签每分钟自行局部刷新这一次，整点走一次全刷整理残影。之后不需要保持连接。</p>
     </fieldset>
     <section class="card-device" aria-label="BLE 价签（按需连接）">
       <div class="ble-header"><span class="badge" id="cardLink">未连接</span></div>
