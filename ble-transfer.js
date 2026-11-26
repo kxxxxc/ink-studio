@@ -124,6 +124,10 @@
   }
 
   async function scanDevices() {
+    if (busy || externalBusy) {
+      setStatus('正在传输，结束后再扫描。', 'warn');
+      return;
+    }
     if (!canUseBluetooth()) {
       throw new Error('蓝牙直连需要 HTTPS / localhost 和支持 Web Bluetooth 的 Chrome、Edge');
     }
@@ -187,6 +191,8 @@
       lab.state.codes?.length !== lab.state.w * lab.state.h;
     $('bleAbort').hidden = !hasDevice || busy || !pendingPlane;
     $('bleAbort').disabled = blocked || !hasDevice;
+    // 扫描会弹出选择框并可能打断会话，传输中直接禁用（chooseDevice 早已有同样的保护）。
+    $('tagScan').disabled = blocked;
     const stateNode = $('tagState');
     if (stateNode) {
       stateNode.textContent = !hasDevice ? '未选择' : label + (connected ? ' · 传输中' : ' · 未连接');
@@ -552,7 +558,11 @@
   }
 
   async function abortTransfer() {
-    if (!connected || !transferPlane) return;
+    if (!connected || !transferPlane) {
+      // 缓存里记着“有未完成平面”、实际已经收尾时，别让按钮点了毫无反应。
+      setStatus('价签上没有未完成的平面，不用中止。', '');
+      return;
+    }
     const plane = transferPlane;
     const packet = await command([0x15], (p) => p[0] === 0x95 && p.length >= 2, 10000, '中止回执');
     requireOk(packet, 0x95);
