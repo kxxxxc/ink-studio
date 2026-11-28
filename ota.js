@@ -17,7 +17,7 @@
   const ERRORS = {
     0x20: '状态错误（没有未完成的传输，或当前状态不允许）',
     0x21: '参数不合理',
-    0x22: '镜像长度不在 4 KiB–128 KiB',
+    0x22: '镜像长度不在当前槽容量内',
     0x23: '降级被拒：这个包的 seq 不比价签在跑的版本新',
     0x24: '收到的字节少于声明长度',
     0x25: 'Flash 内容与收到的数据不符',
@@ -33,6 +33,15 @@
   let uploading = false;
   let verifying = false;
   let ota = null;
+  /* 这台标签的槽容量。只有连上过才知道（blob 契约标签要问 /api/ble/blob/caps），所以：
+   *   cap === null    还没连接过，不拦包（否则 180 KiB 的包会在连接前被误拒）
+   *   blobKnown===false  旧协议标签，131072 B
+   *   blobKnown===true   契约标签，cap = CAPS.total_max */
+  const LEGACY_MAX = 0x20000;
+  let cap = null;
+  let capKey = '';
+  let capBusy = false;
+  let blobKnown = null;
 
   // 验签在哪里做由宿主决定：浏览器直连时用 WebCrypto（core.verifyPackage），prism-ble 的
   // http 页面没有 crypto.subtle，就换成窗口注入的 OTA_VERIFIER（转发给本板用 mbedtls 验）。
@@ -70,6 +79,43 @@
     return !!link?.connected;
   }
 
+  function capacityNow() {
+    return link && link.capacity != null ? link.capacity : cap;
+  }
+
+  // 契约标签（网关版）走 blob；直连站没有 INK_OTA_BLOB，恒走旧 0x20 路径。
+  function blobPath() {
+    return !!(window.INK_OTA_BLOB && blobKnown === true);
+  }
+
+  function legacyOverflow() {
+    return !!pkg && blobKnown === false && pkg.len > LEGACY_MAX;
+  }
+
+  function slotOverflow() {
+    const limit = capacityNow();
+    return !!pkg && limit != null && pkg.len > limit;
+  }
+
+  /* 槽容量是异步问标签的：连接后的第一次 state 里只有 blob.present，caps 还没查。
+   * 这里补一次，成功后重画包信息和按钮状态；失败保持 null（下次再试），不当成 128 KiB。 */
+  async function refreshCapacity() {
+    if (cap != null || capBusy) return;
+    if (!link?.connected || link.blobPresent !== true) return;
+    if (typeof ble.capacity !== 'function') return;
+    const key = link.tagKey || '';
+    capBusy = true;
+    try {
+      const value = await ble.capacity();
+      // 查询期间用户可能换了价签：只把答案记给发起查询的那一枚。
+      if (value != null && (link?.tagKey || '') === key) cap = value;
+    } finally {
+      capBusy = false;
+      renderPkg();
+      sync();
+    }
+  }
+
   function acceptable() {
     if (!pkg || !ota) return null;
     return pkg.seq >= ota.seqActive;
@@ -83,7 +129,8 @@
     $('otaSelftest').disabled = !hasDevice || blocked;
     $('otaAbort').disabled = !hasDevice || blocked;
     $('otaVerify').disabled = !pkg || uploading || verifying;
-    $('otaUpload').disabled = !hasDevice || !pkg?.verified || blocked || acceptable() === false;
+    $('otaUpload').disabled = !hasDevice || !pkg?.verified || blocked || acceptable() === false ||
+      legacyOverflow() || slotOverflow();
     const label = link?.name || '';
     $('otaLinkBadge').textContent = !hasDevice ? '未连接' : label + (isConnected ? ' · 传输中' : ' · 未连接');
     $('otaLinkBadge').classList.toggle('ble-connected', isConnected);
@@ -98,9 +145,14 @@
         : !pkg
           ? '选择 .eslfw 固件包，页面先在本地验签。'
           : pkg.verified
-            ? (acceptable() === false
-              ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
-              : '签名校验通过，可以下发。')
+            ? (legacyOverflow()
+              ? '这个包 ' + pkg.len.toLocaleString() + ' B，旧协议（0x20 帧）最多 128 KiB；换 180 KiB 契约标签走 blob 通道。'
+              : slotOverflow()
+                ? '镜像 ' + pkg.len.toLocaleString() + ' B 超过这台标签的槽容量 ' +
+                  capacityNow().toLocaleString() + ' B。'
+                : acceptable() === false
+                  ? '这个包的 seq 比价签在跑的旧，价签会拒绝。'
+                  : '签名校验通过，可以下发。')
             : '固件包还没通过校验，不能下发。';
     $('otaSupport').hidden = !hint;
     $('otaSupport').textContent = hint;
@@ -121,6 +173,12 @@
         (ota.len ? 'len ' + ota.len + ' · seq ' + ota.seq + ' · CRC ' + hex32(ota.crc) : '—') + '</b></div>';
   }
 
+  function capacityLine() {
+    const limit = capacityNow();
+    if (limit == null) return '槽容量待连接后读取';
+    return '槽 ' + limit.toLocaleString() + ' B · ' + (blobKnown === false ? '仅旧协议' : '契约 v1');
+  }
+
   function renderPkg() {
     if (!pkg) {
       $('otaPkg').innerHTML = '<div><span>固件包</span><b>尚未选择</b></div>';
@@ -136,6 +194,8 @@
       '<div><span>文件</span><b>' + esc(pkg.fileName || '') + ' · ' + pkg.total + ' B</b></div>' +
       '<div><span>镜像</span><b>' + pkg.len + ' B · CRC32 ' + hex32(pkg.crc) + '</b></div>' +
       '<div><span>序号</span><b>seq ' + pkg.seq + ' · key id ' + pkg.keyId + '</b></div>' +
+      '<div><span>这台标签</span><b class="' + (slotOverflow() ? 'bad' : '') + '">' +
+        capacityLine() + '</b></div>' +
       '<div><span>SHA-256</span><b class="mono">' + core.hex(pkg.sha) + '</b></div>' +
       '<div><span>校验</span><b class="' + (v ? (v.ok ? 'good' : 'bad') : '') + '">' + checks + '</b></div>' +
       (accept === null ? '' :
@@ -185,10 +245,15 @@
     sync();
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
-      pkg = core.parsePackage(buf);
+      // 先按 180 KiB 宽上限解析（还不知道标签槽容量），再用已知容量复核。
+      pkg = core.parsePackage(buf, { max: core.MAX_IMAGE });
       pkg.fileName = file.name;
       pkg.verification = null;
       pkg.verified = false;
+      const limit = capacityNow();
+      if (limit != null && pkg.len > limit) {
+        throw new Error('镜像 ' + pkg.len + ' B 超过这台标签的槽容量 ' + limit + ' B');
+      }
       renderPkg();
       log('已读取 ' + file.name + '：镜像 ' + pkg.len + ' B，seq ' + pkg.seq + '，key id ' + pkg.keyId);
       await verifyPkg();
@@ -229,10 +294,25 @@
     }
   }
 
+  function stageText(name) {
+    if (name === '检查') return '检查：读取标签槽容量并打开 blob 会话…';
+    if (name === '传输') return '传输：准备发送镜像…';
+    if (name === '校验/安装') return '校验/安装：价签正在回读 Flash、验签并切槽…';
+    if (name === '等待重启') return '等待重启：价签安装约 5–15 秒后重新广播…';
+    return name;
+  }
+
   async function upload() {
     if (!pkg?.verified) throw new Error('固件包还没通过校验');
     if (!connected()) throw new Error('BLE 未连接');
     if (acceptable() === false) throw new Error('这个包的 seq 比价签在跑的旧，价签会拒绝');
+    const limit = capacityNow();
+    if (limit != null && pkg.len > limit) {
+      throw new Error('镜像 ' + pkg.len + ' B 超过这台标签的槽容量 ' + limit + ' B');
+    }
+    if (legacyOverflow()) {
+      throw new Error('这台标签只有旧协议（0x20 帧），最多 ' + LEGACY_MAX + ' B；这个包 ' + pkg.len + ' B');
+    }
     // 不要再检查 link?.busy：upload 是通过 withTag → ble.session 进来的，会话自己已经把
     // busy 置真，这里再看一定是「忙」，下发永远走不出去。真正的并发保护在 guard() 里。
     uploading = true;
@@ -241,7 +321,45 @@
     $('otaProgress').max = pkg.len;
     $('otaProgress').value = 0;
     sync();
+    try {
+      if (blobPath()) return await uploadBlob();
+      return await uploadLegacy();
+    } finally {
+      uploading = false;
+      ble.setBusy(false);
+      sync();
+    }
+  }
 
+  // 180 KiB 契约标签：网关中转 blob v1，页面只发 HTTP。步骤和判据都在 c3/ota-blob.js。
+  async function uploadBlob() {
+    const conn = link?.conn || '';
+    if (!conn) throw new Error('网关没有返回连接令牌，先把本板固件升级到带 /api/ble/blob/* 的版本');
+    log('开始 blob OTA：' + pkg.len + ' B，seq ' + pkg.seq + '，网关连接 ' + conn);
+    const result = await window.INK_OTA_BLOB.run(conn, pkg, {
+      onStage: (name) => status(stageText(name)),
+      onProgress: (sent, total) => {
+        $('otaProgress').value = sent;
+        if (total) {
+          status('传输：' + sent.toLocaleString() + ' / ' + total.toLocaleString() + ' B（' +
+            (100 * sent / total).toFixed(1) + '%）');
+        }
+      },
+      onLog: (line) => log(line),
+    });
+    if (result.ok) {
+      $('otaProgress').value = pkg.len;
+      status('已确认：价签在跑 seq ' + result.seqActive + ' · phase 0（镜像 ' +
+        pkg.len.toLocaleString() + ' B）。', 'good');
+      log('升级完成：seq_active ' + result.seqActive + '，phase 0。');
+    } else {
+      status((result.verdict === 'rollback' ? '已回滚：' : '待确认：') + result.detail, 'warn');
+      log((result.verdict === 'rollback' ? '已回滚：' : '待确认：') + result.detail);
+    }
+    return result;
+  }
+
+  async function uploadLegacy() {
     let off = 0;
     let notifyError = null;
     const stopNotify = ble.onNotify((packet) => {
@@ -287,7 +405,7 @@
       }
       if (notifyError) throw notifyError;
       log('数据写完，价签正在回读 Flash、算 SHA-256 并验签（约 10–15 秒）…');
-      status('数据已发完，等待价签回读和验签…', 'warn');
+      status('校验/安装：数据已发完，等待价签回读和验签…', 'warn');
 
       const finish = new Uint8Array(1 + 32 + 64 + 1);
       finish[0] = 0x22;
@@ -298,15 +416,12 @@
       if (a2[1]) throw new Error('价签验签失败：' + errorText(a2[1]));
       $('otaProgress').value = pkg.len;
       log('0xA2 rc=0：价签已接受固件，正在切换槽并重启。');
-      status('固件已通过价签验签，价签将在约 1 秒后重启。', 'good');
+      status('已通过价签验签，价签将在约 1 秒后重启。', 'good');
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      status('价签正在重启。约 10 秒后重新连接，再读取 OTA 状态确认 seq_active。', 'warn');
+      status('等待重启：约 10 秒后重新连接，再读取 OTA 状态确认 seq_active。', 'warn');
       log('升级完成。重新连接后确认“在跑槽”的 seq 已变成 ' + pkg.seq + '。');
     } finally {
       stopNotify();
-      uploading = false;
-      ble.setBusy(false);
-      sync();
     }
   }
 
@@ -344,6 +459,19 @@
   let lastTagKey = '';
   ble.subscribe((state) => {
     link = state;
+    // 槽容量属于某一枚标签：换了标签就清掉，不能把上一台的 180 KiB 当成这一台的。
+    if ((state.tagKey || '') !== capKey) {
+      capKey = state.tagKey || '';
+      cap = null;
+      blobKnown = null;
+    }
+    if (state.blobPresent === false) {
+      blobKnown = false;
+      cap = LEGACY_MAX;
+    } else if (state.blobPresent === true) {
+      blobKnown = true;
+      if (state.capacity != null) cap = state.capacity;
+    }
     // Sessions disconnect after every operation. Invalidate cached tag status only when the
     // selected tag actually changed, not on the normal post-transfer disconnect.
     if (state.tagKey && state.tagKey !== lastTagKey && ota) {
@@ -353,10 +481,16 @@
     } else if (state.tagKey) {
       lastTagKey = state.tagKey;
     }
+    renderPkg();
     sync();
+    void refreshCapacity();
   });
   window.addEventListener('ink:tab', (event) => {
-    if (event.detail?.tab === 'ota') sync();
+    if (event.detail?.tab === 'ota') {
+      void refreshCapacity();
+      renderPkg();
+      sync();
+    }
   });
 
   renderStatus();

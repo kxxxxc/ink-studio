@@ -27,7 +27,6 @@
       </label>
       <button class="btn sm ghost" id="tagScan" type="button" title="扫描并添加可用价签（不会建立 BLE 连接）">扫描</button>
       <span class="badge device-state" id="tagState">未选择</span>
-      <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus">手动模式</button>
     </div>
   </div>
 </header>
@@ -207,6 +206,7 @@
         </div>
         <div class="image-actions">
           <button class="btn ghost" id="openBtn" type="button">更换图片</button>
+          <button class="btn nav-debug" id="debugBtn" type="button" aria-expanded="false" aria-controls="debugSettings debugDetails debugToolbar debugStatus" title="调参面板，与扫描无关">手动模式</button>
           <button class="btn" id="topExport" type="button">导出 PNG</button>
         </div>
       </div>
@@ -572,7 +572,10 @@
       <li>价签回读 Flash、验签、保存回滚副本并切槽，然后自动重启。约 1–2 分钟，期间不要断电。</li>
       <li>重启后再读一次 OTA 状态，确认 <code>seq_active</code> 已变成新包的 seq。</li>
     </ol>
-    <pre class="ota-log" id="otaLog">就绪。</pre>
+    <details class="ota-log-wrap" id="otaLogWrap">
+      <summary>传输日志</summary>
+      <pre class="ota-log" id="otaLog">就绪。</pre>
+    </details>
   </section>
 </section>
 

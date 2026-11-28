@@ -24,7 +24,7 @@
   const HEADER = 116;
   const MANIFEST = 52;
   const MIN_IMAGE = 0x1000;       // 4 KiB, the tag's lower bound
-  const MAX_IMAGE = 0x20000;      // 128 KiB, one internal slot
+  const MAX_IMAGE = 0x2D000;      // 180 KiB，TAG_LAYOUT_KIB=180 的槽上限（旧 128 KiB 槽用 {max: 0x20000} 复核）
 
   // The two public halves compiled into firmware/tag-tlsr8359-ble/src/crypto.c.
   // key id 0 = ota_pubkey.h, key id 1 = ota_pubkey1.h.
@@ -73,7 +73,8 @@
     return (crc ^ 0xffffffff) >>> 0;
   }
 
-  function parsePackage(value) {
+  function parsePackage(value, options = {}) {
+    const max = options.max || MAX_IMAGE;
     const buf = toBytes(value);
     if (buf.length < HEADER + MIN_IMAGE) {
       throw new Error('文件太小，不是 .eslfw 固件包（至少 ' + (HEADER + MIN_IMAGE) + ' B）');
@@ -89,8 +90,8 @@
     const seq = view.getUint32(16, true);
     if (ver !== 1) throw new Error('不支持的固件包版本 ' + ver);
     if (keyId > 1) throw new Error('未知的 OTA 密钥编号 ' + keyId);
-    if (len < MIN_IMAGE || len > MAX_IMAGE) {
-      throw new Error('镜像长度 ' + len + ' B 超出 4 KiB–128 KiB');
+    if (len < MIN_IMAGE || len > max) {
+      throw new Error('镜像长度 ' + len + ' B 超出 4 KiB–' + max + ' B');
     }
     if (buf.length !== HEADER + len) {
       throw new Error('包长度不符：声明 ' + len + ' B，头部加镜像应为 ' + (HEADER + len) +

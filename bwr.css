@@ -1,17 +1,19 @@
 /* Ink Studio */
 :root {
   color-scheme: light;
-  --bg: #f5f5f9;
+  --bg: #f6f7f9;
   --panel: #fff;
-  --panel-3: #f5f5f8;
-  --line: #e8e9f0;
-  --line-2: #dfe1e9;
+  --panel-3: #f5f6f8;
+  --line: #e6e8ee;
+  --line-2: #dfe2e9;
   --text: #1d1e27;
   --muted: #4f5364;
   --dim: #64697b;
-  --accent: #1760d9;
-  --accent-hover: #0c4dbf;
-  --accent-soft: #edf3ff;
+  /* 一档低饱和蓝：只有 --accent；--accent-hover 是同一色相压深，不算第二种颜色。 */
+  --accent: #2f6bd8;
+  --accent-hover: #2458b8;
+  --accent-soft: #eef3fd;
+  /* 浮层（toast / 下拉菜单）才用阴影，卡片一律单层边。 */
   --shadow: 0 18px 48px -26px rgba(27, 38, 76, 0.22), 0 2px 5px rgba(27, 38, 76, 0.03);
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
 }
@@ -128,9 +130,10 @@ select {
   cursor: pointer;
 }
 select:hover, input:hover { border-color: #b9bfce; }
-select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
+select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible,
+summary:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 input[type="number"] { font-family: var(--mono); font-size: 11.5px; }
 input[type="color"] {
@@ -171,7 +174,7 @@ input[type="checkbox"] {
   appearance: none;
   min-height: 38px;
   padding: 0 15px;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid transparent;
   background: #eeeef4;
   color: var(--text);
@@ -189,8 +192,8 @@ input[type="checkbox"] {
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.ghost, .nav-debug { background: var(--accent-soft); color: var(--accent-hover); }
-.btn.ghost:hover, .nav-debug:hover { background: #dfeaff; }
-.nav-debug { border-radius: 999px; min-height: 36px; }
+.btn.ghost:hover, .nav-debug:hover { background: #e2ebfb; }
+.nav-debug { border-radius: 8px; min-height: 38px; }
 .btn.sm { min-height: 30px; padding: 0 9px; font-size: 11px; border-radius: 8px; }
 .btn:disabled { opacity: 0.48; cursor: default; }
 .link {
@@ -235,7 +238,7 @@ input[type="checkbox"] {
 .side {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 10px;
   overflow: auto;
   max-height: calc(100dvh - 106px);
   scrollbar-width: thin;
@@ -448,9 +451,8 @@ input[type="checkbox"] {
 .preview-card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 25px;
+  border-radius: 10px;
   padding: 10px;
-  box-shadow: var(--shadow);
 }
 .stage-toolbar {
   display: flex;
@@ -496,9 +498,9 @@ input[type="checkbox"] {
 }
 .stage {
   position: relative;
-  height: clamp(300px, 60vh, 620px);
+  height: clamp(280px, 62vh, 640px);
   overflow: hidden;
-  border-radius: 17px;
+  border-radius: 10px;
   background: #ecedf3;
 }
 .is-debug .stage { height: clamp(300px, 53vh, 580px); }
@@ -720,6 +722,9 @@ input[type="checkbox"] {
   padding: 14px 9px 7px;
 }
 .image-summary { flex: 1 1 250px; }
+/* 空画布：这一行留着（手动模式和「添加图片」都在里面），只把没有内容的推荐语收掉。 */
+.image-details.no-image { padding-top: 4px; }
+.image-details.no-image .image-summary { display: none; }
 .image-summary strong { font-size: 14px; font-weight: 660; }
 .image-summary p { margin: 4px 0 0; font-size: 12px; color: var(--dim); line-height: 1.55; }
 .image-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -833,9 +838,8 @@ input[type="checkbox"] {
   padding: 16px 19px;
   margin-top: 16px;
   border: 1px solid var(--line);
-  border-radius: 21px;
+  border-radius: 10px;
   background: var(--panel);
-  box-shadow: var(--shadow);
 }
 .ble-header { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .ble-header h2 { margin: 0; font-size: 16px; font-weight: 680; }
@@ -856,32 +860,36 @@ input[type="checkbox"] {
 .ble-status.warn { color: #875900; }
 
 /* --------------------------------------------------------------- top tabs */
+/* 页签用底边高亮，不再用一个背景块 + 胶囊；移动端允许横向滚动、不换行。 */
 .app-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
-  background: #ececf3;
+  gap: 2px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   flex: none;
+  min-width: 0;
 }
 .app-tab {
   appearance: none;
   border: 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--muted);
   font-size: 13px;
   font-weight: 650;
-  padding: 8px 15px;
-  border-radius: 999px;
+  padding: 10px 13px 8px;
+  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
 }
 .app-tab:hover { color: var(--text); }
 .app-tab.active {
-  background: var(--panel);
+  background: transparent;
   color: var(--text);
-  box-shadow: 0 1px 5px rgba(27, 38, 76, 0.12);
+  border-bottom-color: var(--accent);
+  box-shadow: none;
 }
 
 /* --------------------------------------------------------------- tab pages */
@@ -919,9 +927,8 @@ input[type="checkbox"] {
 .page-card .card-body {
   padding: 18px 20px;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 14px 34px -28px rgba(27, 38, 76, 0.3);
 }
 #cardPageBadge.ble-connected { color: #096747; background: #e9f7ef; }
 
@@ -938,9 +945,8 @@ input[type="checkbox"] {
   align-content: start;
   padding: 18px 20px;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 14px 34px -28px rgba(27, 38, 76, 0.3);
 }
 .ota-panel h2 {
   margin: 0;
@@ -984,16 +990,25 @@ input[type="checkbox"] {
   font-size: 13px;
   line-height: 1.7;
 }
+.ota-log-wrap { margin: 0; }
+.ota-log-wrap summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 0;
+  user-select: none;
+}
+.ota-log-wrap summary:hover { color: var(--text); }
 .ota-log {
-  max-height: 220px;
-  margin: 0;
-  padding: 10px;
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding: 9px;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #f5f6f9;
+  border-radius: 8px;
+  background: #f7f8fa;
   color: #33394a;
-  font: 11.5px/1.55 var(--mono);
+  font: 10.5px/1.55 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1110,8 +1125,8 @@ input[type="checkbox"] {
   .nav-actions { order: 2; margin-left: auto; }
   .device-pick select { width: 148px; }
   .device-state { display: none; }
-  .app-tabs { order: 3; width: 100%; }
-  .app-tab { flex: 1; padding-inline: 8px; }
+  .app-tabs { order: 3; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+  .app-tab { flex: 0 0 auto; padding-inline: 10px; }
   .page-card { padding: 24px 14px 30px; }
   .page-head h1 { font-size: 25px; }
   .ota-grid { grid-template-columns: minmax(0, 1fr); }
@@ -1155,4 +1170,44 @@ input[type="checkbox"] {
   .orient-btn { padding-inline: 8px; }
   .transform-fields { grid-template-columns: minmax(0, 1fr); }
   .transform-fields .angle-row { max-width: 240px; }
+}
+
+/* --------------------------------------------------------------- 窄屏（390 一类） */
+/* 两行顶栏：品牌 + 设备区一行，页签一行横向滚动。按钮撑到 44 px 触控高度。 */
+@media (max-width: 720px) {
+  .nav-shell { row-gap: 4px; }
+  /* 第一行：品牌 + 页签（页签横向滚动）；第二行：设备区。 */
+  .brand { order: 1; }
+  .app-tabs {
+    order: 2;
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    margin-left: 4px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .app-tabs::-webkit-scrollbar { display: none; }
+  .app-tab { flex: 0 0 auto; }
+  .nav-actions {
+    order: 3;
+    width: 100%;
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+  .device-pick { min-width: 0; flex: 1 1 140px; }
+  .device-pick select { width: 100%; max-width: none; }
+
+  .btn, .btn.sm, .nav-debug, .icon-btn, .chip { min-height: 44px; }
+  .export-grid .btn { height: auto; min-height: 44px; }
+  .card-dialog .btn { min-height: 44px; }
+  .ble-actions .btn, .image-actions .btn { min-height: 44px; }
+
+  .preview-card .stage, .is-debug .stage { max-height: 62vh; }
+  .page-card { padding-inline: 14px; }
+  .ota-kv > div { grid-template-columns: 6.5em minmax(0, 1fr); }
 }

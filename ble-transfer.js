@@ -167,7 +167,13 @@
   }
 
   function readPanel(packet) {
-    if (packet.length !== 13) throw new Error('设备返回的传图状态帧长度有误，应为 13 字节');
+    /* 前 13 字节是协议冻结的前缀（0x97 + plane/loaded/got u32/version/w/h/mode），后面的字段可以长：
+     * 0.6.33 起价签追加 caps/session/free/qbytes/qerr/qend，现在整帧 23 B；C3 网关那侧
+     * （tg_ble.cpp::status_frame_ok）一直只要求 ">= 13"。这里原来写的是等号，于是价签一长帧，
+     * 页面在 connect()→queryStatus() 里就报“应为 13 字节”，连卡片都发不出去。 */
+    if (packet.length < 13) {
+      throw new Error('设备返回的传图状态帧长度有误：' + packet.length + ' 字节，至少应为 13 字节');
+    }
     if (packet[7] !== 1) throw new Error('设备报告了不支持的传图协议版本');
     const w = packet[8] | (packet[9] << 8);
     const h = packet[10] | (packet[11] << 8);

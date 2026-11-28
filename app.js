@@ -771,7 +771,11 @@
     g.fillStyle = '#0a0e14'; g.fillRect(0, 0, thumb.width, thumb.height);
     const image = activeImageLayer();
     $('emptyOpen').hidden = state.layers.length > 0;
-    $('imageDetails').hidden = !state.layers.length;
+    // 手动模式的按钮跟着「替换图片」走，所以这一行在空画布上也得留着——否则新用户还没有
+    // 载入图片时，调参面板整块不可达。空画布只在 `no-image` 下隐藏推荐语和导出。
+    $('imageDetails').hidden = false;
+    $('imageDetails').classList.toggle('no-image', !state.layers.length);
+    $('topExport').hidden = !state.layers.length;
     $('openBtn').textContent = image ? '替换图片' : '添加图片';
     if (!image) {
       $('srcName').textContent = state.activeLayer?.name || '尚未载入';
